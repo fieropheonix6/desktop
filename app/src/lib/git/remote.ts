@@ -5,7 +5,6 @@ import { Repository } from '../../models/repository'
 import { IRemote } from '../../models/remote'
 import { envForRemoteOperation } from './environment'
 import { getSymbolicRef } from './refs'
-import { gitNetworkArguments } from '.'
 
 /**
  * List the remotes, sorted alphabetically by `name`, for a repository.
@@ -21,14 +20,9 @@ export async function getRemotes(
     return []
   }
 
-  const output = result.stdout
-  const lines = output.split('\n')
-  const remotes = lines
-    .filter(x => /\(fetch\)( \[.+\])?$/.test(x))
-    .map(x => x.split(/\s+/))
-    .map(x => ({ name: x[0], url: x[1] }))
-
-  return remotes
+  return [...result.stdout.matchAll(/^(.+)\t(.+)\s\(fetch\)/gm)].map(
+    ([, name, url]) => ({ name, url })
+  )
 }
 
 /** Add a new remote with the given URL. */
@@ -110,7 +104,7 @@ export async function updateRemoteHEAD(
   }
 
   await git(
-    [...gitNetworkArguments(), 'remote', 'set-head', '-a', remote.name],
+    ['remote', 'set-head', '-a', remote.name],
     repository.path,
     'updateRemoteHEAD',
     options

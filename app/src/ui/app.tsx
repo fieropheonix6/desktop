@@ -26,7 +26,7 @@ import {
   isMacOSAndNoLongerSupportedByElectron,
   isWindowsAndNoLongerSupportedByElectron,
 } from '../lib/get-os'
-import { MenuEvent } from '../main-process/menu'
+import { MenuEvent, isTestMenuEvent } from '../main-process/menu'
 import {
   Repository,
   getGitHubHtmlUrl,
@@ -159,7 +159,6 @@ import { clamp } from '../lib/clamp'
 import { generateRepositoryListContextMenu } from './repositories-list/repository-list-item-context-menu'
 import * as ipcRenderer from '../lib/ipc-renderer'
 import { DiscardChangesRetryDialog } from './discard-changes/discard-changes-retry-dialog'
-import { generateDevReleaseSummary } from '../lib/release-notes'
 import { PullRequestReview } from './notifications/pull-request-review'
 import { getRepositoryType } from '../lib/git'
 import { SSHUserPassword } from './ssh/ssh-user-password'
@@ -168,7 +167,6 @@ import { UnreachableCommitsDialog } from './history/unreachable-commits-dialog'
 import { OpenPullRequestDialog } from './open-pull-request/open-pull-request-dialog'
 import { sendNonFatalException } from '../lib/helpers/non-fatal-exception'
 import { createCommitURL } from '../lib/commit-url'
-import { uuid } from '../lib/uuid'
 import { InstallingUpdate } from './installing-update/installing-update'
 import { DialogStackContext } from './dialog'
 import { TestNotifications } from './test-notifications/test-notifications'
@@ -177,11 +175,12 @@ import { PullRequestComment } from './notifications/pull-request-comment'
 import { UnknownAuthors } from './unknown-authors/unknown-authors-dialog'
 import { UnsupportedOSBannerDismissedAtKey } from './banners/os-version-no-longer-supported-banner'
 import { offsetFromNow } from '../lib/offset-from'
-import { getBoolean, getNumber } from '../lib/local-storage'
-import { RepoRulesBypassConfirmation } from './repository-rules/repo-rules-bypass-confirmation'
+import { getNumber } from '../lib/local-storage'
 import { IconPreviewDialog } from './octicons/icon-preview-dialog'
-import { accessibilityBannerDismissed } from './banners/accessibilty-settings-banner'
-import { enableDiffCheckMarksAndLinkUnderlines } from '../lib/feature-flag'
+import { isCertificateErrorSuppressedFor } from '../lib/suppress-certificate-error'
+import { webUtils } from 'electron'
+import { showTestUI } from './lib/test-ui-components/test-ui-components'
+import { ConfirmCommitFilteredChanges } from './changes/confirm-commit-filtered-changes-dialog'
 
 const MinuteInMilliseconds = 1000 * 60
 const HourInMilliseconds = MinuteInMilliseconds * 60
@@ -315,6 +314,10 @@ export class App extends React.Component<IAppProps, IAppState> {
     })
 
     ipcRenderer.on('certificate-error', (_, certificate, error, url) => {
+      if (isCertificateErrorSuppressedFor(url)) {
+        return
+      }
+
       this.props.dispatcher.showPopup({
         type: PopupType.UntrustedCertificate,
         certificate,
@@ -327,6 +330,10 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   public componentWillUnmount() {
     window.clearInterval(this.updateIntervalHandle)
+
+    if (__DARWIN__) {
+      window.removeEventListener('keydown', this.onMacOSWindowKeyDown)
+    }
   }
 
   private async performDeferredLaunchActions() {
@@ -369,13 +376,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     this.setOnOpenBanner()
   }
 
-  private onOpenAccessibilitySettings = () => {
-    this.props.dispatcher.showPopup({
-      type: PopupType.Preferences,
-      initialSelectedTab: PreferencesTab.Accessibility,
-    })
-  }
-
   /**
    * This method sets the app banner on opening the app. The last banner set in
    * this method will be the one shown as only one banner is shown at a time.
@@ -398,23 +398,12 @@ export class App extends React.Component<IAppProps, IAppState> {
       }
     }
 
-    if (
-      enableDiffCheckMarksAndLinkUnderlines() &&
-      getBoolean(accessibilityBannerDismissed) !== true
-    ) {
-      this.setBanner({
-        type: BannerType.AccessibilitySettingsBanner,
-        onOpenAccessibilitySettings: this.onOpenAccessibilitySettings,
-      })
-      return
-    }
-
     this.checkIfThankYouIsInOrder()
   }
 
   private onMenuEvent(name: MenuEvent): any {
     // Don't react to menu events when an error dialog is shown.
-    if (name !== 'show-app-error' && this.state.errorCount > 1) {
+    if (name !== 'test-app-error' && this.state.errorCount > 1) {
       return
     }
 
@@ -487,8 +476,6 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.showCloneRepo()
       case 'show-about':
         return this.showAbout()
-      case 'boomtown':
-        return this.boomtown()
       case 'go-to-commit-message':
         return this.goToCommitMessage()
       case 'open-pull-request':
@@ -505,201 +492,27 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.openCurrentRepositoryInExternalEditor()
       case 'select-all':
         return this.selectAll()
-      case 'show-release-notes-popup':
-        return this.showFakeReleaseNotesPopup()
-      case 'show-thank-you-popup':
-        return this.showFakeThankYouPopup()
       case 'show-stashed-changes':
         return this.showStashedChanges()
       case 'hide-stashed-changes':
         return this.hideStashedChanges()
-      case 'test-show-notification':
-        return this.testShowNotification()
-      case 'test-prune-branches':
-        return this.testPruneBranches()
       case 'find-text':
         return this.findText()
-      case 'show-app-error':
-        return this.props.dispatcher.postError(
-          new Error('Test Error - to use default error handler' + uuid())
-        )
       case 'increase-active-resizable-width':
         return this.resizeActiveResizable('increase-active-resizable-width')
       case 'decrease-active-resizable-width':
         return this.resizeActiveResizable('decrease-active-resizable-width')
-      case 'show-update-banner':
-        return this.showFakeUpdateBanner({})
-      case 'show-arm64-banner':
-        return this.showFakeUpdateBanner({ isArm64: true })
-      case 'show-showcase-update-banner':
-        return this.showFakeUpdateBanner({ isShowcase: true })
-      case 'show-thank-you-banner':
-        return this.showFakeThankYouBanner()
-      case 'show-test-reorder-banner':
-        return this.showFakeReorderBanner()
-      case 'show-test-undone-banner':
-        return this.showFakeUndoneBanner()
-      case 'show-test-cherry-pick-conflicts-banner':
-        return this.showFakeCherryPickConflictBanner()
-      case 'show-test-merge-successful-banner':
-        return this.showFakeMergeSuccessfulBanner()
-      case 'show-icon-test-dialog':
-        return this.showIconTestDialog()
       default:
+        if (isTestMenuEvent(name)) {
+          return showTestUI(
+            name,
+            this.getRepository(),
+            this.props.dispatcher,
+            this.state.emoji
+          )
+        }
         return assertNever(name, `Unknown menu event name: ${name}`)
     }
-  }
-
-  private showFakeUpdateBanner(options: {
-    isArm64?: boolean
-    isShowcase?: boolean
-  }) {
-    updateStore.setIsx64ToARM64ImmediateAutoUpdate(options.isArm64 === true)
-
-    if (options.isShowcase) {
-      this.props.dispatcher.setUpdateShowCaseVisibility(true)
-      return
-    }
-
-    this.props.dispatcher.setUpdateBannerVisibility(true)
-  }
-
-  private showFakeThankYouBanner() {
-    const userContributions: ReadonlyArray<ReleaseNote> = [
-      {
-        kind: 'fixed',
-        message: 'A totally awesome fix that fixes something - #123. Thanks!',
-      },
-      {
-        kind: 'added',
-        message:
-          'You can now do this new thing that was added here - #456. Thanks!',
-      },
-    ]
-
-    const banner: Banner = {
-      type: BannerType.OpenThankYouCard,
-      // Grab emoji's by reference because we could still be loading emoji's
-      emoji: this.state.emoji,
-      onOpenCard: () => this.openThankYouCard(userContributions, getVersion()),
-      onThrowCardAway: () => {
-        console.log('Thrown away :(....')
-      },
-    }
-    this.setBanner(banner)
-  }
-
-  /**
-   * Show a release notes popup for a fake release, intended only to
-   * make it easier to verify changes to the popup. Has no meaning
-   * about a new release being available.
-   */
-  private async showFakeReleaseNotesPopup() {
-    if (__DEV__) {
-      this.props.dispatcher.showPopup({
-        type: PopupType.ReleaseNotes,
-        newReleases: await generateDevReleaseSummary(),
-      })
-    }
-  }
-
-  private showFakeThankYouPopup() {
-    if (__DEV__) {
-      this.props.dispatcher.showPopup({
-        type: PopupType.ThankYou,
-        userContributions: [
-          {
-            kind: 'new',
-            message: '[New] Added fake thank you dialog',
-          },
-        ],
-        friendlyName: 'kind contributor',
-        latestVersion: '3.0.0',
-      })
-    }
-  }
-
-  private async showFakeReorderBanner() {
-    if (__DEV__) {
-      this.props.dispatcher.setBanner({
-        type: BannerType.SuccessfulReorder,
-        count: 1,
-        onUndo: () => {
-          this.props.dispatcher.setBanner({
-            type: BannerType.ReorderUndone,
-            commitsCount: 1,
-          })
-        },
-      })
-    }
-  }
-
-  private async showFakeUndoneBanner() {
-    if (__DEV__) {
-      this.props.dispatcher.setBanner({
-        type: BannerType.ReorderUndone,
-        commitsCount: 1,
-      })
-    }
-  }
-
-  private async showFakeCherryPickConflictBanner() {
-    if (__DEV__) {
-      this.props.dispatcher.setBanner({
-        type: BannerType.CherryPickConflictsFound,
-        targetBranchName: 'fake-branch',
-        onOpenConflictsDialog: () => {},
-      })
-    }
-  }
-
-  private async showFakeMergeSuccessfulBanner() {
-    if (__DEV__) {
-      this.props.dispatcher.setBanner({
-        type: BannerType.SuccessfulMerge,
-        ourBranch: 'fake-branch',
-      })
-    }
-  }
-
-  private async showIconTestDialog() {
-    if (__DEV__) {
-      this.props.dispatcher.showPopup({
-        type: PopupType.TestIcons,
-      })
-    }
-  }
-
-  private testShowNotification() {
-    if (
-      __RELEASE_CHANNEL__ !== 'development' &&
-      __RELEASE_CHANNEL__ !== 'test'
-    ) {
-      return
-    }
-
-    // if current repository is not repository with github repository, return
-    const repository = this.getRepository()
-    if (
-      repository == null ||
-      repository instanceof CloningRepository ||
-      !isRepositoryWithGitHubRepository(repository)
-    ) {
-      return
-    }
-
-    this.props.dispatcher.showPopup({
-      type: PopupType.TestNotifications,
-      repository,
-    })
-  }
-
-  private testPruneBranches() {
-    if (!__DEV__) {
-      return
-    }
-
-    this.props.appStore._testPruneBranches()
   }
 
   /**
@@ -764,12 +577,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
   }
 
-  private boomtown() {
-    setImmediate(() => {
-      throw new Error('Boomtown!')
-    })
-  }
-
   private async goToCommitMessage() {
     await this.showChanges(false)
     this.props.dispatcher.setCommitMessageFocus(true)
@@ -792,7 +599,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     if (isMacOSAndNoLongerSupportedByElectron()) {
       log.error(
-        `Can't check for updates on macOS 10.14 or older. Next available update only supports macOS 10.15 and later`
+        `Can't check for updates on macOS 10.15 or older. Next available update only supports macOS 11.0 and later`
       )
       return
     }
@@ -1191,6 +998,10 @@ export class App extends React.Component<IAppProps, IAppState> {
       window.addEventListener('keyup', this.onWindowKeyUp)
     }
 
+    if (__DARWIN__) {
+      window.addEventListener('keydown', this.onMacOSWindowKeyDown)
+    }
+
     document.addEventListener('focus', this.onDocumentFocus, {
       capture: true,
     })
@@ -1198,6 +1009,31 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private onDocumentFocus = (event: FocusEvent) => {
     this.props.dispatcher.appFocusedElementChanged()
+  }
+
+  /**
+   * Manages keyboard shortcuts specific to macOS.
+   * - adds Shift+F10 to open the context menus (like on Windows so macOS
+   *   keyboard users are not required to use VoiceOver to trigger context
+   *   menus)
+   */
+  private onMacOSWindowKeyDown = (event: KeyboardEvent) => {
+    // We do not want to override Shift+F10 behavior for the context menu on Windows.
+    if (!__DARWIN__) {
+      return
+    }
+
+    if (event.defaultPrevented) {
+      return
+    }
+
+    if (event.shiftKey && event.key === 'F10') {
+      document.activeElement?.dispatchEvent(
+        new Event('contextmenu', {
+          bubbles: true, // Required for React's event system
+        })
+      )
+    }
   }
 
   /**
@@ -1309,7 +1145,7 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private async handleDragAndDrop(fileList: FileList) {
-    const paths = [...fileList].map(x => x.path)
+    const paths = Array.from(fileList, webUtils.getPathForFile)
     const { dispatcher } = this.props
 
     // If they're bulk adding repositories then just blindly try to add them.
@@ -1609,18 +1445,12 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     switch (popup.type) {
       case PopupType.RenameBranch:
-        const stash =
-          this.state.selectedState !== null &&
-          this.state.selectedState.type === SelectionType.Repository
-            ? this.state.selectedState.state.changesState.stashEntry
-            : null
         return (
           <RenameBranch
             key="rename-branch"
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             branch={popup.branch}
-            stash={stash}
             onDismissed={onPopupDismissedFn}
           />
         )
@@ -1712,21 +1542,31 @@ export class App extends React.Component<IAppProps, IAppState> {
             }
             confirmForcePush={this.state.askForConfirmationOnForcePush}
             confirmUndoCommit={this.state.askForConfirmationOnUndoCommit}
+            askForConfirmationOnCommitFilteredChanges={
+              this.state.askForConfirmationOnCommitFilteredChanges
+            }
             uncommittedChangesStrategy={this.state.uncommittedChangesStrategy}
             selectedExternalEditor={this.state.selectedExternalEditor}
             useWindowsOpenSSH={this.state.useWindowsOpenSSH}
             showCommitLengthWarning={this.state.showCommitLengthWarning}
             notificationsEnabled={this.state.notificationsEnabled}
             optOutOfUsageTracking={this.state.optOutOfUsageTracking}
+            useExternalCredentialHelper={this.state.useExternalCredentialHelper}
             enterpriseAccount={this.getEnterpriseAccount()}
             repository={repository}
             onDismissed={onPopupDismissedFn}
             selectedShell={this.state.selectedShell}
             selectedTheme={this.state.selectedTheme}
+            selectedTabSize={this.state.selectedTabSize}
+            useCustomEditor={this.state.useCustomEditor}
+            customEditor={this.state.customEditor}
+            useCustomShell={this.state.useCustomShell}
+            customShell={this.state.customShell}
             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
-            onOpenFileInExternalEditor={this.openFileInExternalEditor}
+            onEditGlobalGitConfig={this.editGlobalGitConfig}
             underlineLinks={this.state.underlineLinks}
             showDiffCheckMarks={this.state.showDiffCheckMarks}
+            canFilterChanges={this.state.canFilterChanges}
           />
         )
       case PopupType.RepositorySettings: {
@@ -1756,6 +1596,8 @@ export class App extends React.Component<IAppProps, IAppState> {
             signInState={this.state.signInState}
             dispatcher={this.props.dispatcher}
             onDismissed={onPopupDismissedFn}
+            isCredentialHelperSignIn={popup.isCredentialHelperSignIn}
+            credentialHelperUrl={popup.credentialHelperUrl}
           />
         )
       case PopupType.AddRepository:
@@ -1849,11 +1691,9 @@ export class App extends React.Component<IAppProps, IAppState> {
             applicationName={getName()}
             applicationVersion={version}
             applicationArchitecture={process.arch}
-            onCheckForUpdates={this.onCheckForUpdates}
             onCheckForNonStaggeredUpdates={this.onCheckForNonStaggeredUpdates}
             onShowAcknowledgements={this.showAcknowledgements}
             onShowTermsAndConditions={this.showTermsAndConditions}
-            isTopMost={isTopMost}
           />
         )
       case PopupType.PublishRepository:
@@ -1970,6 +1810,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             key="lsf-attribute-mismatch"
             onDismissed={onPopupDismissedFn}
             onUpdateExistingFilters={this.updateExistingLFSFilters}
+            onEditGlobalGitConfig={this.editGlobalGitConfig}
           />
         )
       case PopupType.UpstreamAlreadyExists:
@@ -2622,17 +2463,6 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
-      case PopupType.ConfirmRepoRulesBypass: {
-        return (
-          <RepoRulesBypassConfirmation
-            key="repo-rules-bypass-confirmation"
-            repository={popup.repository}
-            branch={popup.branch}
-            onConfirm={popup.onConfirm}
-            onDismissed={onPopupDismissedFn}
-          />
-        )
-      }
       case PopupType.TestIcons: {
         return (
           <IconPreviewDialog
@@ -2641,9 +2471,25 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.ConfirmCommitFilteredChanges: {
+        return (
+          <ConfirmCommitFilteredChanges
+            onCommitAnyway={popup.onCommitAnyway}
+            onDismissed={onPopupDismissedFn}
+            showFilesToBeCommitted={popup.showFilesToBeCommitted}
+            setConfirmCommitFilteredChanges={
+              this.setConfirmCommitFilteredChanges
+            }
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
     }
+  }
+
+  private setConfirmCommitFilteredChanges = (value: boolean) => {
+    this.props.dispatcher.setConfirmCommitFilteredChanges(value)
   }
 
   private getPullRequestState() {
@@ -2694,6 +2540,9 @@ export class App extends React.Component<IAppProps, IAppState> {
     this.props.dispatcher.installGlobalLFSFilters(true)
   }
 
+  private editGlobalGitConfig = () =>
+    this.props.dispatcher.editGlobalGitConfig()
+
   private initializeLFS = (repositories: ReadonlyArray<Repository>) => {
     this.props.dispatcher.installLFSHooks(repositories)
   }
@@ -2724,7 +2573,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     this.props.dispatcher.openShell(path, true)
   }
 
-  private onCheckForUpdates = () => this.checkForUpdates(false)
   private onCheckForNonStaggeredUpdates = () =>
     this.checkForUpdates(false, true)
 
@@ -2842,7 +2690,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     const externalEditorLabel = this.state.selectedExternalEditor
       ? this.state.selectedExternalEditor
       : undefined
-    const shellLabel = this.state.selectedShell
+    const { useCustomShell, selectedShell } = this.state
     const filterText = this.state.repositoryFilterText
     return (
       <RepositoriesList
@@ -2862,7 +2710,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         onShowRepository={this.showRepository}
         onOpenInExternalEditor={this.openInExternalEditor}
         externalEditorLabel={externalEditorLabel}
-        shellLabel={shellLabel}
+        shellLabel={useCustomShell ? undefined : selectedShell}
         dispatcher={this.props.dispatcher}
       />
     )
@@ -3036,7 +2884,9 @@ export class App extends React.Component<IAppProps, IAppState> {
       onRemoveRepositoryAlias: onRemoveRepositoryAlias,
       onViewOnGitHub: this.viewOnGitHub,
       repository: repository,
-      shellLabel: this.state.selectedShell,
+      shellLabel: this.state.useCustomShell
+        ? undefined
+        : this.state.selectedShell,
     })
 
     showContextualMenu(items)
@@ -3051,7 +2901,13 @@ export class App extends React.Component<IAppProps, IAppState> {
     const state = selection.state
     const revertProgress = state.revertProgress
     if (revertProgress) {
-      return <RevertProgress progress={revertProgress} />
+      return (
+        <RevertProgress
+          progress={revertProgress}
+          width={this.state.pushPullButtonWidth}
+          dispatcher={this.props.dispatcher}
+        />
+      )
     }
 
     let remoteName = state.remote ? state.remote.name : null
@@ -3109,6 +2965,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         askForConfirmationOnForcePush={this.state.askForConfirmationOnForcePush}
         onDropdownStateChanged={this.onPushPullDropdownStateChanged}
         enableFocusTrap={enableFocusTrap}
+        pushPullButtonWidth={this.state.pushPullButtonWidth}
       />
     )
   }
@@ -3212,6 +3069,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       <BranchDropdown
         dispatcher={this.props.dispatcher}
         isOpen={isOpen}
+        branchDropdownWidth={this.state.branchDropdownWidth}
         onDropDownStateChanged={this.onBranchDropdownStateChanged}
         repository={repository}
         repositoryState={selection.state}
@@ -3277,6 +3135,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         isX64ToARM64ImmediateAutoUpdate={
           updateStore.state.isX64ToARM64ImmediateAutoUpdate
         }
+        prioritizeUpdate={updateStore.state.prioritizeUpdate}
+        prioritizeUpdateInfoUrl={updateStore.state.prioritizeUpdateInfoUrl}
         onDismissed={this.onUpdateAvailableDismissed}
         isUpdateShowcaseVisible={this.state.isUpdateShowcaseVisible}
         emoji={this.state.emoji}
@@ -3335,9 +3195,9 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     if (selectedState.type === SelectionType.Repository) {
-      const externalEditorLabel = state.selectedExternalEditor
-        ? state.selectedExternalEditor
-        : undefined
+      const externalEditorLabel = state.useCustomEditor
+        ? undefined
+        : state.selectedExternalEditor ?? undefined
 
       return (
         <RepositoryView
@@ -3370,7 +3230,13 @@ export class App extends React.Component<IAppProps, IAppState> {
           askForConfirmationOnCheckoutCommit={
             state.askForConfirmationOnCheckoutCommit
           }
+          askForConfirmationOnCommitFilteredChanges={
+            state.askForConfirmationOnCommitFilteredChanges
+          }
           accounts={state.accounts}
+          isExternalEditorAvailable={
+            state.useCustomEditor || state.selectedExternalEditor !== null
+          }
           externalEditorLabel={externalEditorLabel}
           resolvedExternalEditor={state.resolvedExternalEditor}
           onOpenInExternalEditor={this.onOpenInExternalEditor}
@@ -3384,6 +3250,7 @@ export class App extends React.Component<IAppProps, IAppState> {
           showCommitLengthWarning={this.state.showCommitLengthWarning}
           onCherryPick={this.startCherryPickWithoutBranch}
           pullRequestSuggestedNextAction={state.pullRequestSuggestedNextAction}
+          canFilterChanges={state.canFilterChanges}
         />
       )
     } else if (selectedState.type === SelectionType.CloningRepository) {
@@ -3431,8 +3298,14 @@ export class App extends React.Component<IAppProps, IAppState> {
       ? ApplicationTheme.Light
       : this.state.currentTheme
 
+    const currentTabSize = this.state.selectedTabSize
+
     return (
-      <div id="desktop-app-chrome" className={className}>
+      <div
+        id="desktop-app-chrome"
+        className={className}
+        style={{ tabSize: currentTabSize }}
+      >
         <AppTheme theme={currentTheme} />
         {this.renderTitlebar()}
         {this.state.showWelcomeFlow

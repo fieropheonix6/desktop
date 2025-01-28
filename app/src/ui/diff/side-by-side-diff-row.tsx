@@ -10,9 +10,8 @@ import {
 } from './diff-helpers'
 import { ILineTokens } from '../../lib/highlighter/types'
 import classNames from 'classnames'
-import { Octicon } from '../octicons'
+import { Octicon, OcticonSymbolVariant } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
-import { narrowNoNewlineSymbol } from './text-diff'
 import { shallowEquals, structuralEquals } from '../../lib/equality'
 import { DiffHunkExpansionType, DiffSelectionType } from '../../models/diff'
 import { PopoverAnchorPosition } from '../lib/popover'
@@ -20,10 +19,16 @@ import { WhitespaceHintPopover } from './whitespace-hint-popover'
 import { TooltipDirection } from '../lib/tooltip'
 import { Button } from '../lib/button'
 import { diffCheck, diffDash } from '../octicons/diff'
-import {
-  enableDiffCheckMarks,
-  enableGroupDiffCheckmarks,
-} from '../../lib/feature-flag'
+
+// This is a custom version of the no-newline octicon that's exactly as
+// tall as it needs to be (8px) which helps with aligning it on the line.
+const narrowNoNewlineSymbol: OcticonSymbolVariant = {
+  w: 16,
+  h: 8,
+  p: [
+    'm 16,1 0,3 c 0,0.55 -0.45,1 -1,1 l -3,0 0,2 -3,-3 3,-3 0,2 2,0 0,-2 2,0 z M 8,4 C 8,6.2 6.2,8 4,8 1.8,8 0,6.2 0,4 0,1.8 1.8,0 4,0 6.2,0 8,1.8 8,4 Z M 1.5,5.66 5.66,1.5 C 5.18,1.19 4.61,1 4,1 2.34,1 1,2.34 1,4 1,4.61 1.19,5.17 1.5,5.66 Z M 7,4 C 7,3.39 6.81,2.83 6.5,2.34 L 2.34,6.5 C 2.82,6.81 3.39,7 4,7 5.66,7 7,5.66 7,4 Z',
+  ],
+}
 
 enum DiffRowPrefix {
   Added = '+',
@@ -213,11 +218,6 @@ interface ISideBySideDiffRowProps {
   readonly onContextMenuExpandHunk: () => void
 
   /**
-   * Called when the user right-clicks text on the diff.
-   */
-  readonly onContextMenuText: () => void
-
-  /**
    * Array of classes applied to the after section of a row
    */
   readonly afterClassNames: ReadonlyArray<string>
@@ -266,9 +266,7 @@ export class SideBySideDiffRow extends React.Component<
     } = this.props
     const baseRowClasses = classNames('row', {
       'has-check-all-control':
-        enableGroupDiffCheckmarks() &&
-        this.props.showDiffCheckMarks &&
-        isDiffSelectable,
+        this.props.showDiffCheckMarks && isDiffSelectable,
     })
     const beforeClasses = classNames('before', ...beforeClassNames)
     const afterClasses = classNames('after', ...afterClassNames)
@@ -278,7 +276,7 @@ export class SideBySideDiffRow extends React.Component<
           'expandable-both': row.expansionType === DiffHunkExpansionType.Both,
         })
         return (
-          <div className={rowClasses}>
+          <div className={rowClasses} role="cell">
             {this.renderHunkHeaderGutter(row.hunkIndex, row.expansionType)}
             {this.renderContentFromString(row.content)}
           </div>
@@ -289,7 +287,7 @@ export class SideBySideDiffRow extends React.Component<
         const { beforeLineNumber, afterLineNumber } = row
         if (!showSideBySideDiff) {
           return (
-            <div className={rowClasses}>
+            <div className={rowClasses} role="cell">
               <div className="before">
                 {this.renderLineNumbers(
                   [beforeLineNumber, afterLineNumber],
@@ -302,7 +300,7 @@ export class SideBySideDiffRow extends React.Component<
         }
 
         return (
-          <div className={rowClasses}>
+          <div className={rowClasses} role="cell">
             <div className="before">
               {this.renderLineNumber(beforeLineNumber, DiffColumn.Before)}
               {this.renderContentFromString(row.content, row.beforeTokens)}
@@ -319,7 +317,7 @@ export class SideBySideDiffRow extends React.Component<
         const rowClasses = classNames('added', baseRowClasses)
         if (!showSideBySideDiff) {
           return (
-            <div className={rowClasses}>
+            <div className={rowClasses} role="cell">
               {this.renderHunkHandle()}
               <div className={afterClasses}>
                 {this.renderLineNumbers(
@@ -335,7 +333,7 @@ export class SideBySideDiffRow extends React.Component<
         }
 
         return (
-          <div className={rowClasses}>
+          <div className={rowClasses} role="cell">
             <div className={beforeClasses}>
               {this.renderLineNumber(undefined, DiffColumn.Before)}
               {this.renderContentFromString('')}
@@ -355,7 +353,7 @@ export class SideBySideDiffRow extends React.Component<
         const rowClasses = classNames('deleted', baseRowClasses)
         if (!showSideBySideDiff) {
           return (
-            <div className={rowClasses}>
+            <div className={rowClasses} role="cell">
               {this.renderHunkHandle()}
               <div className={beforeClasses}>
                 {this.renderLineNumbers(
@@ -371,7 +369,7 @@ export class SideBySideDiffRow extends React.Component<
         }
 
         return (
-          <div className={rowClasses}>
+          <div className={rowClasses} role="cell">
             <div className={beforeClasses}>
               {this.renderLineNumber(lineNumber, DiffColumn.Before, isSelected)}
               {this.renderContent(row.data, DiffRowPrefix.Deleted)}
@@ -390,7 +388,7 @@ export class SideBySideDiffRow extends React.Component<
         const { beforeData: before, afterData: after } = row
         const rowClasses = classNames('modified', baseRowClasses)
         return (
-          <div className={rowClasses}>
+          <div className={rowClasses} role="cell">
             <div className={beforeClasses}>
               {this.renderLineNumber(
                 before.lineNumber,
@@ -447,7 +445,7 @@ export class SideBySideDiffRow extends React.Component<
     prefix: DiffRowPrefix = DiffRowPrefix.Nothing
   ) {
     return (
-      <div className="content" onContextMenu={this.props.onContextMenuText}>
+      <div className="content">
         <div className="prefix">&nbsp;&nbsp;{prefix}&nbsp;&nbsp;</div>
         <div className="content-wrapper">
           {/* Copy to clipboard will ignore empty "lines" unless we add br */}
@@ -510,9 +508,7 @@ export class SideBySideDiffRow extends React.Component<
     } = this.props
     return (
       (showSideBySideDiff ? lineNumberWidth : lineNumberWidth * 2) +
-      (isDiffSelectable && showDiffCheckMarks && enableDiffCheckMarks()
-        ? 20
-        : 0)
+      (isDiffSelectable && showDiffCheckMarks ? 20 : 0)
     )
   }
 
@@ -618,7 +614,7 @@ export class SideBySideDiffRow extends React.Component<
      `side-by-side-diff.tsx`). This gives us a single element to be our control
      of the check all functionality. It is positioned absolutely over the
      hunk-handle-place-holders in each row in order to provide one element that
-     is interactive. 
+     is interactive.
 
      Other notes: I originally attempted to just use a single hunk-handle
      for the first row in a group as the heights of the rows are calculated and
@@ -641,7 +637,7 @@ export class SideBySideDiffRow extends React.Component<
         style={style}
       >
         <span className="focus-handle">
-          {(!enableGroupDiffCheckmarks() || !this.props.showDiffCheckMarks) && (
+          {!this.props.showDiffCheckMarks && (
             <div className="increased-hover-surface" style={{ height }} />
           )}
           {!isOnlyOneCheckInRow &&
@@ -677,6 +673,7 @@ export class SideBySideDiffRow extends React.Component<
         onChange={this.onClickHunk}
         onFocus={this.onHunkFocus}
         onBlur={this.onHunkBlur}
+        onContextMenu={this.onContextMenuHunk}
       />
     )
 
@@ -710,11 +707,7 @@ export class SideBySideDiffRow extends React.Component<
     selectionState: DiffSelectionType,
     isFirst: boolean
   ) => {
-    if (
-      !enableGroupDiffCheckmarks() ||
-      !isFirst ||
-      !this.props.showDiffCheckMarks
-    ) {
+    if (!isFirst || !this.props.showDiffCheckMarks) {
       return null
     }
 
@@ -778,17 +771,19 @@ export class SideBySideDiffRow extends React.Component<
         className={classes}
         style={{ width: this.lineGutterWidth }}
         onMouseDown={this.onMouseDownLineNumber}
-        onContextMenu={this.onContextMenuLineNumber}
       >
         {isSelectable &&
           this.renderLineNumberCheckbox(checkboxId, isSelected === true)}
-        <label htmlFor={checkboxId}>
+        <label
+          htmlFor={checkboxId}
+          onContextMenu={this.onContextMenuLineNumber}
+        >
           {this.renderLineNumberCheck(isSelected)}
           {lineNumbers.map((lineNumber, index) => (
             <span key={index}>
               {lineNumber && <span className="sr-only">Line </span>}
               {lineNumber}
-              {lineNumber && (
+              {lineNumber && isSelected !== undefined && (
                 <span className="sr-only">
                   {column === DiffColumn.After ? ' added' : ' deleted'}
                 </span>
@@ -801,11 +796,7 @@ export class SideBySideDiffRow extends React.Component<
   }
 
   private renderLineNumberCheck(isSelected?: boolean) {
-    if (
-      !this.props.isDiffSelectable ||
-      !enableDiffCheckMarks() ||
-      !this.props.showDiffCheckMarks
-    ) {
+    if (!this.props.isDiffSelectable || !this.props.showDiffCheckMarks) {
       return null
     }
 
@@ -822,6 +813,7 @@ export class SideBySideDiffRow extends React.Component<
   ) {
     return (
       <input
+        onContextMenu={this.onContextMenuLineNumber}
         className="sr-only"
         id={checkboxId}
         type="checkbox"

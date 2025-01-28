@@ -1,3 +1,4 @@
+import { Emoji } from '../lib/emoji'
 import { Popup } from './popup'
 
 export enum BannerType {
@@ -16,7 +17,6 @@ export enum BannerType {
   SuccessfulReorder = 'SuccessfulReorder',
   ConflictsFound = 'ConflictsFound',
   OSVersionNoLongerSupported = 'OSVersionNoLongerSupported',
-  AccessibilitySettingsBanner = 'AccessibilitySettingsBanner',
 }
 
 export type Banner =
@@ -80,7 +80,7 @@ export type Banner =
     }
   | {
       readonly type: BannerType.OpenThankYouCard
-      readonly emoji: Map<string, string>
+      readonly emoji: Map<string, Emoji>
       readonly onOpenCard: () => void
       readonly onThrowCardAway: () => void
     }
@@ -122,7 +122,3 @@ export type Banner =
       readonly onOpenConflictsDialog: () => void
     }
   | { readonly type: BannerType.OSVersionNoLongerSupported }
-  | {
-      readonly type: BannerType.AccessibilitySettingsBanner
-      readonly onOpenAccessibilitySettings: () => void
-    }

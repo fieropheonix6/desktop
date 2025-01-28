@@ -63,7 +63,7 @@
       font-family: var(--font-family-monospace);
       font-size: var(--font-size-sm);
       word-wrap: break-word;
-      white-space: pre-line;
+      white-space: pre-wrap;
       min-height: 0;
     }
   }
@@ -219,7 +219,8 @@
   .commit-unreachable-info {
     display: flex;
     align-items: center;
-    margin-top: var(--spacing);
+    padding: var(--spacing);
+    padding-top: 0;
 
     .octicon {
       margin-right: var(--spacing-half);

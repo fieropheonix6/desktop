@@ -46,12 +46,20 @@ export const isMacOSVentura = memoizeOne(
     systemVersionLessThan('14.0')
 )
 
-/** We're currently running macOS and it is macOS Ventura. */
+/** We're currently running macOS and it is macOS Sonoma. */
 export const isMacOSSonoma = memoizeOne(
   () =>
     __DARWIN__ &&
     systemVersionGreaterThanOrEqualTo('14.0') &&
     systemVersionLessThan('15.0')
+)
+
+/** We're currently running macOS and it is macOS Sequoia. */
+export const isMacOSSequoia = memoizeOne(
+  () =>
+    __DARWIN__ &&
+    systemVersionGreaterThanOrEqualTo('15.0') &&
+    systemVersionLessThan('16.0')
 )
 
 /** We're currently running macOS and it is macOS Catalina or earlier. */
@@ -81,7 +89,7 @@ export const isWindowsAndNoLongerSupportedByElectron = memoizeOne(
 )
 
 export const isMacOSAndNoLongerSupportedByElectron = memoizeOne(
-  () => __DARWIN__ && systemVersionLessThan('10.15')
+  () => __DARWIN__ && systemVersionLessThan('11.0')
 )
 
 export const isOSNoLongerSupportedByElectron = memoizeOne(

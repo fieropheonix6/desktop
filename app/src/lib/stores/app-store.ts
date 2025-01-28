@@ -7,6 +7,7 @@ import {
   IssuesStore,
   PullRequestCoordinator,
   RepositoriesStore,
+  SignInResult,
   SignInStore,
   UpstreamRemoteName,
 } from '.'
@@ -129,6 +130,7 @@ import {
 import {
   findEditorOrDefault,
   getAvailableEditors,
+  launchCustomExternalEditor,
   launchExternalEditor,
 } from '../editors'
 import { assertNever, fatalError, forceUnwrap } from '../fatal-error'
@@ -182,6 +184,7 @@ import {
   getBranchMergeBaseDiff,
   checkoutCommit,
   getRemoteURL,
+  getGlobalConfigPath,
 } from '../git'
 import {
   installGlobalLFSFilters,
@@ -202,6 +205,7 @@ import { RetryAction, RetryActionType } from '../../models/retry-actions'
 import {
   Default as DefaultShell,
   findShellOrDefault,
+  launchCustomShell,
   launchShell,
   parse as parseShell,
   Shell,
@@ -215,6 +219,7 @@ import { promiseWithMinimumTimeout } from '../promise'
 import { BackgroundFetcher } from './helpers/background-fetcher'
 import { RepositoryStateCache } from './repository-state-cache'
 import { readEmoji } from '../read-emoji'
+import { Emoji } from '../emoji'
 import { GitStoreCache } from './git-store-cache'
 import { GitErrorContext } from '../git-error-context'
 import {
@@ -238,11 +243,7 @@ import {
 } from './updates/changes-state'
 import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
 import { BranchPruner } from './helpers/branch-pruner'
-import {
-  enableDiffCheckMarks,
-  enableLinkUnderlines,
-  enableMoveStash,
-} from '../feature-flag'
+import { enableCustomIntegration } from '../feature-flag'
 import { Banner, BannerType } from '../../models/banner'
 import { ComputedAction } from '../../models/computed-action'
 import {
@@ -331,6 +332,16 @@ import { resizableComponentClass } from '../../ui/resizable'
 import { compare } from '../compare'
 import { parseRepoRules, useRepoRulesLogic } from '../helpers/repo-rules'
 import { RepoRulesInfo } from '../../models/repo-rules'
+import {
+  setUseExternalCredentialHelper,
+  useExternalCredentialHelper,
+  useExternalCredentialHelperDefault,
+} from '../trampoline/use-external-credential-helper'
+import { IOAuthAction } from '../parse-app-url'
+import {
+  ICustomIntegration,
+  migratedCustomIntegration,
+} from '../custom-integration'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
@@ -353,6 +364,12 @@ const stashedFilesWidthConfigKey: string = 'stashed-files-width'
 const defaultPullRequestFileListWidth: number = 250
 const pullRequestFileListConfigKey: string = 'pull-request-files-width'
 
+const defaultBranchDropdownWidth: number = 230
+const branchDropdownWidthConfigKey: string = 'branch-dropdown-width'
+
+const defaultPushPullButtonWidth: number = 230
+const pushPullButtonWidthConfigKey: string = 'push-pull-button-width'
+
 const askToMoveToApplicationsFolderDefault: boolean = true
 const confirmRepoRemovalDefault: boolean = true
 const showCommitLengthWarningDefault: boolean = false
@@ -362,6 +379,7 @@ const confirmDiscardStashDefault: boolean = true
 const confirmCheckoutCommitDefault: boolean = true
 const askForConfirmationOnForcePushDefault = true
 const confirmUndoCommitDefault: boolean = true
+const confirmCommitFilteredChangesDefault: boolean = true
 const askToMoveToApplicationsFolderKey: string = 'askToMoveToApplicationsFolder'
 const confirmRepoRemovalKey: string = 'confirmRepoRemoval'
 const showCommitLengthWarningKey: string = 'showCommitLengthWarning'
@@ -372,6 +390,8 @@ const confirmDiscardChangesPermanentlyKey: string =
   'confirmDiscardChangesPermanentlyKey'
 const confirmForcePushKey: string = 'confirmForcePush'
 const confirmUndoCommitKey: string = 'confirmUndoCommit'
+const confirmCommitFilteredChangesKey: string =
+  'confirmCommitFilteredChangesKey'
 
 const uncommittedChangesStrategyKey = 'uncommittedChangesStrategyKind'
 
@@ -390,6 +410,9 @@ const hideWhitespaceInPullRequestDiffKey =
 
 const commitSpellcheckEnabledDefault = true
 const commitSpellcheckEnabledKey = 'commit-spellcheck-enabled'
+
+export const tabSizeDefault: number = 8
+const tabSizeKey: string = 'tab-size'
 
 const shellKey = 'shell'
 
@@ -411,11 +434,20 @@ const lastThankYouKey = 'version-and-users-of-last-thank-you'
 const pullRequestSuggestedNextActionKey =
   'pull-request-suggested-next-action-key'
 
+export const useCustomEditorKey = 'use-custom-editor'
+const customEditorKey = 'custom-editor'
+
+export const useCustomShellKey = 'use-custom-shell'
+const customShellKey = 'custom-shell'
+
 export const underlineLinksKey = 'underline-links'
 export const underlineLinksDefault = true
 
 export const showDiffCheckMarksDefault = true
 export const showDiffCheckMarksKey = 'diff-check-marks-visible'
+
+export const canFilterChangesDefault = false
+export const canFilterChangesKey = 'can-filter-changes'
 
 export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
@@ -445,7 +477,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   >()
 
   /** Map from shortcut (e.g., :+1:) to on disk URL. */
-  private emoji = new Map<string, string>()
+  private emoji = new Map<string, Emoji>()
 
   /**
    * The Application menu as an AppMenu instance or null if
@@ -470,6 +502,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private commitSummaryWidth = constrain(defaultCommitSummaryWidth)
   private stashedFilesWidth = constrain(defaultStashedFilesWidth)
   private pullRequestFileListWidth = constrain(defaultPullRequestFileListWidth)
+  private branchDropdownWidth = constrain(defaultBranchDropdownWidth)
+  private pushPullButtonWidth = constrain(defaultPushPullButtonWidth)
 
   private windowState: WindowState | null = null
   private windowZoomFactor: number = 1
@@ -479,6 +513,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private askToMoveToApplicationsFolderSetting: boolean =
     askToMoveToApplicationsFolderDefault
+  private useExternalCredentialHelper: boolean =
+    useExternalCredentialHelperDefault
   private askForConfirmationOnRepositoryRemoval: boolean =
     confirmRepoRemovalDefault
   private confirmDiscardChanges: boolean = confirmDiscardChangesDefault
@@ -488,6 +524,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private confirmCheckoutCommit: boolean = confirmCheckoutCommitDefault
   private askForConfirmationOnForcePush = askForConfirmationOnForcePushDefault
   private confirmUndoCommit: boolean = confirmUndoCommitDefault
+  private confirmCommitFilteredChanges: boolean =
+    confirmCommitFilteredChangesDefault
   private imageDiffType: ImageDiffType = imageDiffTypeDefault
   private hideWhitespaceInChangesDiff: boolean =
     hideWhitespaceInChangesDiffDefault
@@ -506,7 +544,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private resolvedExternalEditor: string | null = null
 
   /** The user's preferred shell. */
-  private selectedShell = DefaultShell
+  private selectedShell: Shell = DefaultShell
 
   /** The current repository filter text */
   private repositoryFilterText: string = ''
@@ -523,6 +561,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private selectedBranchesTab = BranchesTab.Branches
   private selectedTheme = ApplicationTheme.System
   private currentTheme: ApplicableTheme = ApplicationTheme.Light
+  private selectedTabSize = tabSizeDefault
 
   private useWindowsOpenSSH: boolean = false
 
@@ -538,6 +577,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private currentDragElement: DragElement | null = null
   private lastThankYou: ILastThankYou | undefined
+
+  private useCustomEditor: boolean = false
+  private customEditor: ICustomIntegration | null = null
+
+  private useCustomShell: boolean = false
+  private customShell: ICustomIntegration | null = null
+
   private showCIStatusPopover: boolean = false
 
   /** A service for managing the stack of open popups */
@@ -552,6 +598,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private cachedRepoRulesets = new Map<number, IAPIRepoRuleset>()
 
   private underlineLinks: boolean = underlineLinksDefault
+
+  private canFilterChanges: boolean = canFilterChangesDefault
 
   public constructor(
     private readonly gitHubUserStore: GitHubUserStore,
@@ -830,13 +878,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.cloningRepositoriesStore.onDidError(e => this.emitError(e))
 
-    this.signInStore.onDidAuthenticate((account, method) => {
-      this._addAccount(account)
-
-      if (this.showWelcomeFlow) {
-        this.statsStore.recordWelcomeWizardSignInMethod(method)
-      }
-    })
+    this.signInStore.onDidAuthenticate(account => this._addAccount(account))
     this.signInStore.onDidUpdate(() => this.emitUpdate())
     this.signInStore.onDidError(error => this.emitError(error))
 
@@ -987,6 +1029,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       focusCommitMessage: this.focusCommitMessage,
       emoji: this.emoji,
       sidebarWidth: this.sidebarWidth,
+      branchDropdownWidth: this.branchDropdownWidth,
+      pushPullButtonWidth: this.pushPullButtonWidth,
       commitSummaryWidth: this.commitSummaryWidth,
       stashedFilesWidth: this.stashedFilesWidth,
       pullRequestFilesListWidth: this.pullRequestFileListWidth,
@@ -997,6 +1041,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       currentBanner: this.currentBanner,
       askToMoveToApplicationsFolderSetting:
         this.askToMoveToApplicationsFolderSetting,
+      useExternalCredentialHelper: this.useExternalCredentialHelper,
       askForConfirmationOnRepositoryRemoval:
         this.askForConfirmationOnRepositoryRemoval,
       askForConfirmationOnDiscardChanges: this.confirmDiscardChanges,
@@ -1006,6 +1051,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       askForConfirmationOnCheckoutCommit: this.confirmCheckoutCommit,
       askForConfirmationOnForcePush: this.askForConfirmationOnForcePush,
       askForConfirmationOnUndoCommit: this.confirmUndoCommit,
+      askForConfirmationOnCommitFilteredChanges:
+        this.confirmCommitFilteredChanges,
       uncommittedChangesStrategy: this.uncommittedChangesStrategy,
       selectedExternalEditor: this.selectedExternalEditor,
       imageDiffType: this.imageDiffType,
@@ -1020,6 +1067,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       selectedBranchesTab: this.selectedBranchesTab,
       selectedTheme: this.selectedTheme,
       currentTheme: this.currentTheme,
+      selectedTabSize: this.selectedTabSize,
       apiRepositories: this.apiRepositoriesStore.getState(),
       useWindowsOpenSSH: this.useWindowsOpenSSH,
       showCommitLengthWarning: this.showCommitLengthWarning,
@@ -1029,6 +1077,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       commitSpellcheckEnabled: this.commitSpellcheckEnabled,
       currentDragElement: this.currentDragElement,
       lastThankYou: this.lastThankYou,
+      useCustomEditor: this.useCustomEditor,
+      customEditor: this.customEditor,
+      useCustomShell: this.useCustomShell,
+      customShell: this.customShell,
       showCIStatusPopover: this.showCIStatusPopover,
       notificationsEnabled: getNotificationsEnabled(),
       pullRequestSuggestedNextAction: this.pullRequestSuggestedNextAction,
@@ -1036,6 +1088,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       cachedRepoRulesets: this.cachedRepoRulesets,
       underlineLinks: this.underlineLinks,
       showDiffCheckMarks: this.showDiffCheckMarks,
+      canFilterChanges: this.canFilterChanges,
     }
   }
 
@@ -2105,6 +2158,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.pullRequestFileListWidth = constrain(
       getNumber(pullRequestFileListConfigKey, defaultPullRequestFileListWidth)
     )
+    this.branchDropdownWidth = constrain(
+      getNumber(branchDropdownWidthConfigKey, defaultBranchDropdownWidth)
+    )
+    this.pushPullButtonWidth = constrain(
+      getNumber(pushPullButtonWidthConfigKey, defaultPushPullButtonWidth)
+    )
 
     this.updateResizableConstraints()
     // TODO: Initiliaze here for now... maybe move to dialog mounting
@@ -2114,6 +2173,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       askToMoveToApplicationsFolderKey,
       askToMoveToApplicationsFolderDefault
     )
+
+    this.useExternalCredentialHelper = useExternalCredentialHelper()
 
     this.askForConfirmationOnRepositoryRemoval = getBoolean(
       confirmRepoRemovalKey,
@@ -2163,6 +2224,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
       confirmUndoCommitDefault
     )
 
+    this.confirmCommitFilteredChanges = getBoolean(
+      confirmCommitFilteredChangesKey,
+      confirmCommitFilteredChangesDefault
+    )
+
     this.uncommittedChangesStrategy =
       getEnum(uncommittedChangesStrategyKey, UncommittedChangesStrategy) ??
       defaultUncommittedChangesStrategy
@@ -2206,12 +2272,34 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.currentTheme = await getCurrentlyAppliedTheme()
 
+    this.selectedTabSize = getNumber(tabSizeKey, tabSizeDefault)
+
     themeChangeMonitor.onThemeChanged(theme => {
       this.currentTheme = theme
       this.emitUpdate()
     })
 
     this.lastThankYou = getObject<ILastThankYou>(lastThankYouKey)
+
+    this.useCustomEditor =
+      enableCustomIntegration() && getBoolean(useCustomEditorKey, false)
+    this.customEditor = getObject<ICustomIntegration>(customEditorKey) ?? null
+
+    this.useCustomShell =
+      enableCustomIntegration() && getBoolean(useCustomShellKey, false)
+    this.customShell = getObject<ICustomIntegration>(customShellKey) ?? null
+
+    // Migrate custom editor and shell to the new format if needed. This
+    // will persist the new format to local storage.
+    // Hopefully we can remove this migration in the future.
+    const migratedCustomEditor = migratedCustomIntegration(this.customEditor)
+    if (migratedCustomEditor !== null) {
+      this._setCustomEditor(migratedCustomEditor)
+    }
+    const migratedCustomShell = migratedCustomIntegration(this.customShell)
+    if (migratedCustomShell !== null) {
+      this._setCustomShell(migratedCustomShell)
+    }
 
     this.pullRequestSuggestedNextAction =
       getEnum(
@@ -2220,17 +2308,23 @@ export class AppStore extends TypedBaseStore<IAppState> {
       ) ?? defaultPullRequestSuggestedNextAction
 
     // Always false if the feature flag is disabled.
-    this.underlineLinks = enableLinkUnderlines()
-      ? getBoolean(underlineLinksKey, underlineLinksDefault)
-      : false
+    this.underlineLinks = getBoolean(underlineLinksKey, underlineLinksDefault)
 
-    this.showDiffCheckMarks = enableDiffCheckMarks()
-      ? getBoolean(showDiffCheckMarksKey, showDiffCheckMarksDefault)
-      : false
+    this.showDiffCheckMarks = getBoolean(
+      showDiffCheckMarksKey,
+      showDiffCheckMarksDefault
+    )
+
+    this.canFilterChanges = getBoolean(
+      canFilterChangesKey,
+      canFilterChangesDefault
+    )
 
     this.emitUpdateNow()
 
     this.accountsStore.refresh()
+
+    this.updateMenuLabelsForSelectedRepository()
   }
 
   /**
@@ -2238,11 +2332,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
    * dimensions change.
    */
   private updateResizableConstraints() {
-    // The combined width of the branch dropdown and the push pull fetch button
+    // The combined width of the branch dropdown and the push/pull/fetch button
     // Since the repository list toolbar button width is tied to the width of
-    // the sidebar we can't let it push the branch, and push/pull/fetch buttons
+    // the sidebar we can't let it push the branch, and push/pull/fetch button
     // off screen.
-    const toolbarButtonsWidth = 460
+    const toolbarButtonsMinWidth =
+      defaultPushPullButtonWidth + defaultBranchDropdownWidth
 
     // Start with all the available width
     let available = window.innerWidth
@@ -2253,7 +2348,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // 220 was determined as the minimum value since it is the smallest width
     // that will still fit the placeholder text in the branch selector textbox
     // of the history tab
-    const maxSidebarWidth = available - toolbarButtonsWidth
+    const maxSidebarWidth = available - toolbarButtonsMinWidth
     this.sidebarWidth = constrain(this.sidebarWidth, 220, maxSidebarWidth)
 
     // Now calculate the width we have left to distribute for the other panes
@@ -2269,6 +2364,34 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.commitSummaryWidth = constrain(this.commitSummaryWidth, 100, filesMax)
     this.stashedFilesWidth = constrain(this.stashedFilesWidth, 100, filesMax)
+
+    // Update the maximum width available for the branch dropdown resizable.
+    // The branch dropdown can only be as wide as the available space after
+    // taking the sidebar and pull/push/fetch button widths. If the room
+    // available is less than the default width, we will split the difference
+    // between the branch dropdown and the push/pull/fetch button so they stay
+    // visible on the most zoomed view.
+    const branchDropdownMax = available - defaultPushPullButtonWidth
+    const minimumBranchDropdownWidth =
+      defaultBranchDropdownWidth > available / 2
+        ? available / 2 - 10 // 10 is to give a little bit of space to see the fetch dropdown button
+        : defaultBranchDropdownWidth
+    this.branchDropdownWidth = constrain(
+      this.branchDropdownWidth,
+      minimumBranchDropdownWidth,
+      branchDropdownMax
+    )
+
+    const pushPullButtonMaxWidth = available - this.branchDropdownWidth.value
+    const minimumPushPullToolBarWidth =
+      defaultPushPullButtonWidth > available / 2
+        ? available / 2 + 30 // 30 to clip the fetch dropdown button in favor of seeing more of the words on the toolbar buttons
+        : defaultPushPullButtonWidth
+    this.pushPullButtonWidth = constrain(
+      this.pushPullButtonWidth,
+      minimumPushPullToolBarWidth,
+      pushPullButtonMaxWidth
+    )
   }
 
   /**
@@ -2363,16 +2486,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
    */
   private updateMenuItemLabels(state: IRepositoryState | null) {
     const {
+      useCustomShell,
       selectedShell,
       selectedRepository,
+      useCustomEditor,
       selectedExternalEditor,
       askForConfirmationOnRepositoryRemoval,
       askForConfirmationOnForcePush,
     } = this
 
     const labels: MenuLabelsEvent = {
-      selectedShell,
-      selectedExternalEditor,
+      selectedShell: useCustomShell ? null : selectedShell,
+      selectedExternalEditor: useCustomEditor ? null : selectedExternalEditor,
       askForConfirmationOnRepositoryRemoval,
       askForConfirmationOnForcePush,
     }
@@ -4205,12 +4330,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
     await gitStore.performFailableOperation(async () => {
       await renameBranch(repository, branch, newName)
 
-      if (enableMoveStash()) {
-        const stashEntry = gitStore.desktopStashEntries.get(branch.name)
+      const stashEntry = gitStore.desktopStashEntries.get(branch.name)
 
-        if (stashEntry) {
-          await moveStashEntry(repository, stashEntry, newName)
-        }
+      if (stashEntry) {
+        await moveStashEntry(repository, stashEntry, newName)
       }
     })
 
@@ -4366,6 +4489,33 @@ export class AppStore extends TypedBaseStore<IAppState> {
     })
   }
 
+  private getBranchToPush(
+    repository: Repository,
+    options?: PushOptions
+  ): Branch | undefined {
+    if (options?.branch !== undefined) {
+      return options?.branch
+    }
+
+    const state = this.repositoryStateCache.get(repository)
+
+    const { tip } = state.branchesState
+
+    if (tip.kind === TipState.Unborn) {
+      throw new Error('The current branch is unborn.')
+    }
+
+    if (tip.kind === TipState.Detached) {
+      throw new Error('The current repository is in a detached HEAD state.')
+    }
+
+    if (tip.kind === TipState.Valid) {
+      return tip.branch
+    }
+
+    return
+  }
+
   private async performPush(
     repository: Repository,
     options?: PushOptions
@@ -4382,159 +4532,151 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return this.withPushPullFetch(repository, async () => {
-      const { tip } = state.branchesState
+      const branch = this.getBranchToPush(repository, options)
 
-      if (tip.kind === TipState.Unborn) {
-        throw new Error('The current branch is unborn.')
+      if (branch === undefined) {
+        return
       }
 
-      if (tip.kind === TipState.Detached) {
-        throw new Error('The current repository is in a detached HEAD state.')
+      const remoteName = branch.upstreamRemoteName || remote.name
+
+      const pushTitle = `Pushing to ${remoteName}`
+
+      // Emit an initial progress even before our push begins
+      // since we're doing some work to get remotes up front.
+      this.updatePushPullFetchProgress(repository, {
+        kind: 'push',
+        title: pushTitle,
+        value: 0,
+        remote: remoteName,
+        branch: branch.name,
+      })
+
+      // Let's say that a push takes roughly twice as long as a fetch,
+      // this is of course highly inaccurate.
+      let pushWeight = 2.5
+      let fetchWeight = 1
+
+      // Let's leave 10% at the end for refreshing
+      const refreshWeight = 0.1
+
+      // Scale pull and fetch weights to be between 0 and 0.9.
+      const scale = (1 / (pushWeight + fetchWeight)) * (1 - refreshWeight)
+
+      pushWeight *= scale
+      fetchWeight *= scale
+
+      const retryAction: RetryAction = {
+        type: RetryActionType.Push,
+        repository,
       }
 
-      if (tip.kind === TipState.Valid) {
-        const { branch } = tip
+      // This is most likely not necessary and is only here out of
+      // an abundance of caution. We're introducing support for
+      // automatically configuring Git proxies based on system
+      // proxy settings and therefore need to pass along the remote
+      // url to functions such as push, pull, fetch etc.
+      //
+      // Prior to this we relied primarily on the `branch.remote`
+      // property and used the `remote.name` as a fallback in case the
+      // branch object didn't have a remote name (i.e. if it's not
+      // published yet).
+      //
+      // The remote.name is derived from the current tip first and falls
+      // back to using the defaultRemote if the current tip isn't valid
+      // or if the current branch isn't published. There's however no
+      // guarantee that they'll be refreshed at the exact same time so
+      // there's a theoretical possibility that `branch.remote` and
+      // `remote.name` could be out of sync. I have no reason to suspect
+      // that's the case and if it is then we already have problems as
+      // the `fetchRemotes` call after the push already relies on the
+      // `remote` and not the `branch.remote`. All that said this is
+      // a critical path in the app and somehow breaking pushing would
+      // be near unforgivable so I'm introducing this `safeRemote`
+      // temporarily to ensure that there's no risk of us using an
+      // out of sync remote name while still providing envForRemoteOperation
+      // with an url to use when resolving proxies.
+      //
+      // I'm also adding a non fatal exception if this ever happens
+      // so that we can confidently remove this safeguard in a future
+      // release.
+      const safeRemote: IRemote = { name: remoteName, url: remote.url }
 
-        const remoteName = branch.upstreamRemoteName || remote.name
+      if (safeRemote.name !== remote.name) {
+        sendNonFatalException(
+          'remoteNameMismatch',
+          new Error('The current remote name differs from the branch remote')
+        )
+      }
 
-        const pushTitle = `Pushing to ${remoteName}`
-
-        // Emit an initial progress even before our push begins
-        // since we're doing some work to get remotes up front.
-        this.updatePushPullFetchProgress(repository, {
-          kind: 'push',
-          title: pushTitle,
-          value: 0,
-          remote: remoteName,
-          branch: branch.name,
-        })
-
-        // Let's say that a push takes roughly twice as long as a fetch,
-        // this is of course highly inaccurate.
-        let pushWeight = 2.5
-        let fetchWeight = 1
-
-        // Let's leave 10% at the end for refreshing
-        const refreshWeight = 0.1
-
-        // Scale pull and fetch weights to be between 0 and 0.9.
-        const scale = (1 / (pushWeight + fetchWeight)) * (1 - refreshWeight)
-
-        pushWeight *= scale
-        fetchWeight *= scale
-
-        const retryAction: RetryAction = {
-          type: RetryActionType.Push,
-          repository,
-        }
-
-        // This is most likely not necessary and is only here out of
-        // an abundance of caution. We're introducing support for
-        // automatically configuring Git proxies based on system
-        // proxy settings and therefore need to pass along the remote
-        // url to functions such as push, pull, fetch etc.
-        //
-        // Prior to this we relied primarily on the `branch.remote`
-        // property and used the `remote.name` as a fallback in case the
-        // branch object didn't have a remote name (i.e. if it's not
-        // published yet).
-        //
-        // The remote.name is derived from the current tip first and falls
-        // back to using the defaultRemote if the current tip isn't valid
-        // or if the current branch isn't published. There's however no
-        // guarantee that they'll be refreshed at the exact same time so
-        // there's a theoretical possibility that `branch.remote` and
-        // `remote.name` could be out of sync. I have no reason to suspect
-        // that's the case and if it is then we already have problems as
-        // the `fetchRemotes` call after the push already relies on the
-        // `remote` and not the `branch.remote`. All that said this is
-        // a critical path in the app and somehow breaking pushing would
-        // be near unforgivable so I'm introducing this `safeRemote`
-        // temporarily to ensure that there's no risk of us using an
-        // out of sync remote name while still providing envForRemoteOperation
-        // with an url to use when resolving proxies.
-        //
-        // I'm also adding a non fatal exception if this ever happens
-        // so that we can confidently remove this safeguard in a future
-        // release.
-        const safeRemote: IRemote = { name: remoteName, url: remote.url }
-
-        if (safeRemote.name !== remote.name) {
-          sendNonFatalException(
-            'remoteNameMismatch',
-            new Error('The current remote name differs from the branch remote')
-          )
-        }
-
-        const gitStore = this.gitStoreCache.get(repository)
-        await gitStore.performFailableOperation(
-          async () => {
-            await pushRepo(
-              repository,
-              safeRemote,
-              branch.name,
-              branch.upstreamWithoutRemote,
-              gitStore.tagsToPush,
-              options,
-              progress => {
-                this.updatePushPullFetchProgress(repository, {
-                  ...progress,
-                  title: pushTitle,
-                  value: pushWeight * progress.value,
-                })
-              }
-            )
-            gitStore.clearTagsToPush()
-
-            await gitStore.fetchRemotes([safeRemote], false, fetchProgress => {
+      const gitStore = this.gitStoreCache.get(repository)
+      await gitStore.performFailableOperation(
+        async () => {
+          await pushRepo(
+            repository,
+            safeRemote,
+            branch.name,
+            branch.upstreamWithoutRemote,
+            gitStore.tagsToPush,
+            options,
+            progress => {
               this.updatePushPullFetchProgress(repository, {
-                ...fetchProgress,
-                value: pushWeight + fetchProgress.value * fetchWeight,
+                ...progress,
+                title: pushTitle,
+                value: pushWeight * progress.value,
               })
-            })
+            }
+          )
+          gitStore.clearTagsToPush()
 
-            const refreshTitle = __DARWIN__
-              ? 'Refreshing Repository'
-              : 'Refreshing repository'
-            const refreshStartProgress = pushWeight + fetchWeight
-
+          await gitStore.fetchRemotes([safeRemote], false, fetchProgress => {
             this.updatePushPullFetchProgress(repository, {
-              kind: 'generic',
-              title: refreshTitle,
-              description: 'Fast-forwarding branches',
-              value: refreshStartProgress,
+              ...fetchProgress,
+              value: pushWeight + fetchProgress.value * fetchWeight,
             })
+          })
 
-            await this.fastForwardBranches(repository)
+          const refreshTitle = __DARWIN__
+            ? 'Refreshing Repository'
+            : 'Refreshing repository'
+          const refreshStartProgress = pushWeight + fetchWeight
 
-            this.updatePushPullFetchProgress(repository, {
-              kind: 'generic',
-              title: refreshTitle,
-              value: refreshStartProgress + refreshWeight * 0.5,
-            })
+          this.updatePushPullFetchProgress(repository, {
+            kind: 'generic',
+            title: refreshTitle,
+            description: 'Fast-forwarding branches',
+            value: refreshStartProgress,
+          })
 
-            // manually refresh branch protections after the push, to ensure
-            // any new branch will immediately report as protected
-            await this.refreshBranchProtectionState(repository)
+          await this.fastForwardBranches(repository)
 
-            await this._refreshRepository(repository)
-          },
-          { retryAction }
-        )
+          this.updatePushPullFetchProgress(repository, {
+            kind: 'generic',
+            title: refreshTitle,
+            value: refreshStartProgress + refreshWeight * 0.5,
+          })
 
-        this.updatePushPullFetchProgress(repository, null)
+          // manually refresh branch protections after the push, to ensure
+          // any new branch will immediately report as protected
+          await this.refreshBranchProtectionState(repository)
 
-        this.updateMenuLabelsForSelectedRepository()
+          await this._refreshRepository(repository)
+        },
+        { retryAction }
+      )
 
-        // Note that we're using `getAccountForRepository` here instead
-        // of the `account` instance we've got and that's because recordPush
-        // needs to be able to differentiate between a GHES account and a
-        // generic account and it can't do that only based on the endpoint.
-        this.statsStore.recordPush(
-          getAccountForRepository(this.accounts, repository),
-          options
-        )
-      }
+      this.updatePushPullFetchProgress(repository, null)
+
+      this.updateMenuLabelsForSelectedRepository()
+
+      // Note that we're using `getAccountForRepository` here instead
+      // of the `account` instance we've got and that's because recordPush
+      // needs to be able to differentiate between a GHES account and a
+      // generic account and it can't do that only based on the endpoint.
+      this.statsStore.recordPush(
+        getAccountForRepository(this.accounts, repository),
+        options
+      )
     })
   }
 
@@ -4769,6 +4911,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // skip pushing if the current branch is a detached HEAD or the repository
     // is unborn
     if (gitStore.tip.kind === TipState.Valid) {
+      if (
+        gitStore.defaultBranch !== null &&
+        gitStore.tip.branch.name !== gitStore.defaultBranch.name
+      ) {
+        await this.performPush(repository, {
+          branch: gitStore.defaultBranch,
+          forceWithLease: false,
+        })
+      }
       await this.performPush(repository)
     }
 
@@ -5134,6 +5285,48 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return Promise.resolve()
   }
 
+  public _setBranchDropdownWidth(width: number): Promise<void> {
+    this.branchDropdownWidth = { ...this.branchDropdownWidth, value: width }
+    setNumber(branchDropdownWidthConfigKey, width)
+    this.updateResizableConstraints()
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _resetBranchDropdownWidth(): Promise<void> {
+    this.branchDropdownWidth = {
+      ...this.branchDropdownWidth,
+      value: defaultBranchDropdownWidth,
+    }
+    localStorage.removeItem(branchDropdownWidthConfigKey)
+    this.updateResizableConstraints()
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _setPushPullButtonWidth(width: number): Promise<void> {
+    this.pushPullButtonWidth = { ...this.pushPullButtonWidth, value: width }
+    setNumber(pushPullButtonWidthConfigKey, width)
+    this.updateResizableConstraints()
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _resetPushPullButtonWidth(): Promise<void> {
+    this.pushPullButtonWidth = {
+      ...this.pushPullButtonWidth,
+      value: defaultPushPullButtonWidth,
+    }
+    localStorage.removeItem(pushPullButtonWidthConfigKey)
+    this.updateResizableConstraints()
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
   public _setCommitSummaryWidth(width: number): Promise<void> {
     this.commitSummaryWidth = { ...this.commitSummaryWidth, value: width }
     setNumber(commitSummaryWidthConfigKey, width)
@@ -5440,10 +5633,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
   /** This shouldn't be called directly. See `Dispatcher`. */
   public async _openShell(path: string) {
     this.statsStore.increment('openShellCount')
+    const { useCustomShell, customShell } = this.getState()
 
     try {
-      const match = await findShellOrDefault(this.selectedShell)
-      await launchShell(match, path, error => this._pushError(error))
+      if (useCustomShell && customShell) {
+        await launchCustomShell(customShell, path, error =>
+          this._pushError(error)
+        )
+      } else {
+        const match = await findShellOrDefault(this.selectedShell)
+        await launchShell(match, path, error => this._pushError(error))
+      }
     } catch (error) {
       this.emitError(error)
     }
@@ -5454,23 +5654,34 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return shell.openExternal(url)
   }
 
+  public async _editGlobalGitConfig() {
+    await getGlobalConfigPath()
+      .then(p => this._openInExternalEditor(p))
+      .catch(e => log.error('Could not open global Git config for editing', e))
+  }
+
   /** Open a path to a repository or file using the user's configured editor */
   public async _openInExternalEditor(fullPath: string): Promise<void> {
-    const { selectedExternalEditor } = this.getState()
+    const { selectedExternalEditor, useCustomEditor, customEditor } =
+      this.getState()
 
     try {
-      const match = await findEditorOrDefault(selectedExternalEditor)
-      if (match === null) {
-        this.emitError(
-          new ExternalEditorError(
-            `No suitable editors installed for GitHub Desktop to launch. Install ${suggestedExternalEditor.name} for your platform and restart GitHub Desktop to try again.`,
-            { suggestDefaultEditor: true }
+      if (useCustomEditor && customEditor) {
+        await launchCustomExternalEditor(fullPath, customEditor)
+      } else {
+        const match = await findEditorOrDefault(selectedExternalEditor)
+        if (match === null) {
+          this.emitError(
+            new ExternalEditorError(
+              `No suitable editors installed for GitHub Desktop to launch. Install ${suggestedExternalEditor.name} for your platform and restart GitHub Desktop to try again.`,
+              { suggestDefaultEditor: true }
+            )
           )
-        )
-        return
-      }
+          return
+        }
 
-      await launchExternalEditor(fullPath, match)
+        await launchExternalEditor(fullPath, match)
+      }
     } catch (error) {
       this.emitError(error)
     }
@@ -5492,6 +5703,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
   ): Promise<void> {
     await this.statsStore.setOptOut(optOut, userViewedPrompt)
 
+    this.emitUpdate()
+  }
+
+  public _setUseExternalCredentialHelper(value: boolean) {
+    setUseExternalCredentialHelper(value)
+    this.useExternalCredentialHelper = value
     this.emitUpdate()
   }
 
@@ -5571,6 +5788,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
   public _setConfirmUndoCommitSetting(value: boolean): Promise<void> {
     this.confirmUndoCommit = value
     setBoolean(confirmUndoCommitKey, value)
+
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _setConfirmCommitFilteredChanges(value: boolean): Promise<void> {
+    this.confirmCommitFilteredChanges = value
+    setBoolean(confirmCommitFilteredChangesKey, value)
 
     this.emitUpdate()
 
@@ -5721,38 +5947,31 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return this._refreshRepository(repository)
   }
 
+  public _resolveOAuthRequest(action: IOAuthAction) {
+    return this.signInStore.resolveOAuthRequest(action)
+  }
+
   public _resetSignInState(): Promise<void> {
     this.signInStore.reset()
     return Promise.resolve()
   }
 
-  public _beginDotComSignIn(): Promise<void> {
-    this.signInStore.beginDotComSignIn()
-    return Promise.resolve()
+  public _beginDotComSignIn(resultCallback?: (result: SignInResult) => void) {
+    return this.signInStore.beginDotComSignIn(resultCallback)
   }
 
-  public _beginEnterpriseSignIn(): Promise<void> {
-    this.signInStore.beginEnterpriseSignIn()
-    return Promise.resolve()
+  public _beginEnterpriseSignIn(
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    return this.signInStore.beginEnterpriseSignIn(resultCallback)
   }
 
   public _setSignInEndpoint(url: string): Promise<void> {
     return this.signInStore.setEndpoint(url)
   }
 
-  public _setSignInCredentials(
-    username: string,
-    password: string
-  ): Promise<void> {
-    return this.signInStore.authenticateWithBasicAuth(username, password)
-  }
-
-  public _requestBrowserAuthentication(): Promise<void> {
-    return this.signInStore.authenticateWithBrowser()
-  }
-
-  public _setSignInOTP(otp: string): Promise<void> {
-    return this.signInStore.setTwoFactorOTP(otp)
+  public _requestBrowserAuthentication() {
+    this.signInStore.authenticateWithBrowser()
   }
 
   public async _setAppFocusState(isFocused: boolean): Promise<void> {
@@ -6512,6 +6731,19 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return Promise.resolve()
   }
 
+  /**
+   * Set the application-wide tab indentation
+   */
+  public _setSelectedTabSize(tabSize: number) {
+    if (!isNaN(tabSize)) {
+      this.selectedTabSize = tabSize
+      setNumber(tabSizeKey, tabSize)
+      this.emitUpdate()
+    }
+
+    return Promise.resolve()
+  }
+
   public async _resolveCurrentEditor() {
     const match = await findEditorOrDefault(this.selectedExternalEditor)
     const resolvedExternalEditor = match != null ? match.editor : null
@@ -6836,7 +7068,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const { commitSHAs } = compareState
     const commitIndexBySha = new Map(commitSHAs.map((sha, i) => [sha, i]))
 
-    return [...commits].sort((a, b) =>
+    return commits.toSorted((a, b) =>
       compare(commitIndexBySha.get(b.sha), commitIndexBySha.get(a.sha))
     )
   }
@@ -6856,7 +7088,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const { commitSHAs } = compareState
     const commitIndexBySha = new Map(commitSHAs.map((sha, i) => [sha, i]))
 
-    return [...commits].sort((a, b) =>
+    return commits.toSorted((a, b) =>
       compare(commitIndexBySha.get(b), commitIndexBySha.get(a))
     )
   }
@@ -7084,6 +7316,30 @@ export class AppStore extends TypedBaseStore<IAppState> {
     setObject(lastThankYouKey, lastThankYou)
     this.lastThankYou = lastThankYou
 
+    this.emitUpdate()
+  }
+
+  public _setUseCustomEditor(useCustomEditor: boolean) {
+    setBoolean(useCustomEditorKey, useCustomEditor)
+    this.useCustomEditor = useCustomEditor
+    this.emitUpdate()
+  }
+
+  public _setCustomEditor(customEditor: ICustomIntegration) {
+    setObject(customEditorKey, customEditor)
+    this.customEditor = customEditor
+    this.emitUpdate()
+  }
+
+  public _setUseCustomShell(useCustomShell: boolean) {
+    setBoolean(useCustomShellKey, useCustomShell)
+    this.useCustomShell = useCustomShell
+    this.emitUpdate()
+  }
+
+  public _setCustomShell(customShell: ICustomIntegration) {
+    setObject(customShellKey, customShell)
+    this.customShell = customShell
     this.emitUpdate()
   }
 
@@ -7895,6 +8151,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
     if (showDiffCheckMarks !== this.showDiffCheckMarks) {
       this.showDiffCheckMarks = showDiffCheckMarks
       setBoolean(showDiffCheckMarksKey, showDiffCheckMarks)
+      this.emitUpdate()
+    }
+  }
+
+  public _updateCanFilterChanges(canFilterChanges: boolean) {
+    if (canFilterChanges !== this.canFilterChanges) {
+      this.canFilterChanges = canFilterChanges
+      setBoolean(canFilterChangesKey, canFilterChanges)
       this.emitUpdate()
     }
   }

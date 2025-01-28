@@ -7,8 +7,8 @@ import { UNSAFE_openDirectory } from '../shell'
 import { MenuLabelsEvent } from '../../models/menu-labels'
 import * as ipcWebContents from '../ipc-webcontents'
 import { mkdir } from 'fs/promises'
+import { buildTestMenu } from './build-test-menu'
 
-const platformDefaultShell = __WIN32__ ? 'Command Prompt' : 'Terminal'
 const createPullRequestLabel = __DARWIN__
   ? 'Create Pull Request'
   : 'Create &pull request'
@@ -29,6 +29,10 @@ enum ZoomDirection {
   Reset,
   In,
   Out,
+}
+
+export const separator: Electron.MenuItemConstructorOptions = {
+  type: 'separator',
 }
 
 export function buildDefaultMenu({
@@ -56,7 +60,6 @@ export function buildDefaultMenu({
     : createPullRequestLabel
 
   const template = new Array<Electron.MenuItemConstructorOptions>()
-  const separator: Electron.MenuItemConstructorOptions = { type: 'separator' }
 
   if (__DARWIN__) {
     template.push({
@@ -122,6 +125,7 @@ export function buildDefaultMenu({
 
   if (!__DARWIN__) {
     const fileItems = fileMenu.submenu as Electron.MenuItemConstructorOptions[]
+    const exitAccelerator = __WIN32__ ? 'Alt+F4' : 'CmdOrCtrl+Q'
 
     fileItems.push(
       separator,
@@ -135,7 +139,7 @@ export function buildDefaultMenu({
       {
         role: 'quit',
         label: 'E&xit',
-        accelerator: 'Alt+F4',
+        accelerator: exitAccelerator,
       }
     )
   }
@@ -253,8 +257,8 @@ export function buildDefaultMenu({
         // chorded shortcuts, but this menu item is not a user-facing feature
         // so we are going to keep this one around.
         accelerator: 'CmdOrCtrl+Alt+R',
-        click(item: any, focusedWindow: Electron.BrowserWindow | undefined) {
-          if (focusedWindow) {
+        click(item: any, focusedWindow: Electron.BaseWindow | undefined) {
+          if (focusedWindow instanceof BrowserWindow) {
             focusedWindow.reload()
           }
         },
@@ -268,8 +272,8 @@ export function buildDefaultMenu({
         accelerator: (() => {
           return __DARWIN__ ? 'Alt+Command+I' : 'Ctrl+Shift+I'
         })(),
-        click(item: any, focusedWindow: Electron.BrowserWindow | undefined) {
-          if (focusedWindow) {
+        click(item: any, focusedWindow: Electron.BaseWindow | undefined) {
+          if (focusedWindow instanceof BrowserWindow) {
             focusedWindow.webContents.toggleDevTools()
           }
         },
@@ -321,8 +325,8 @@ export function buildDefaultMenu({
       },
       {
         label: __DARWIN__
-          ? `Open in ${selectedShell ?? platformDefaultShell}`
-          : `O&pen in ${selectedShell ?? platformDefaultShell}`,
+          ? `Open in ${selectedShell ?? 'Shell'}`
+          : `O&pen in ${selectedShell ?? 'shell'}`,
         id: 'open-in-shell',
         accelerator: 'Ctrl+`',
         click: emit('open-in-shell'),
@@ -546,108 +550,7 @@ export function buildDefaultMenu({
     showLogsItem,
   ]
 
-  if (__DEV__) {
-    helpItems.push(
-      separator,
-      {
-        label: 'Crash main process…',
-        click() {
-          throw new Error('Boomtown!')
-        },
-      },
-      {
-        label: 'Crash renderer process…',
-        click: emit('boomtown'),
-      },
-      {
-        label: 'Show popup',
-        submenu: [
-          {
-            label: 'Release notes',
-            click: emit('show-release-notes-popup'),
-          },
-          {
-            label: 'Thank you',
-            click: emit('show-thank-you-popup'),
-          },
-          {
-            label: 'Show App Error',
-            click: emit('show-app-error'),
-          },
-          {
-            label: 'Octicons',
-            click: emit('show-icon-test-dialog'),
-          },
-        ],
-      },
-      {
-        label: 'Prune branches',
-        click: emit('test-prune-branches'),
-      }
-    )
-  }
-
-  if (__RELEASE_CHANNEL__ === 'development' || __RELEASE_CHANNEL__ === 'test') {
-    if (__WIN32__) {
-      helpItems.push(separator, {
-        label: 'Command Line Tool',
-        submenu: [
-          {
-            label: 'Install',
-            click: emit('install-windows-cli'),
-          },
-          {
-            label: 'Uninstall',
-            click: emit('uninstall-windows-cli'),
-          },
-        ],
-      })
-    }
-
-    helpItems.push(
-      {
-        label: 'Show notification',
-        click: emit('test-show-notification'),
-      },
-      {
-        label: 'Show banner',
-        submenu: [
-          {
-            label: 'Update banner',
-            click: emit('show-update-banner'),
-          },
-          {
-            label: `Showcase Update banner`,
-            click: emit('show-showcase-update-banner'),
-          },
-          {
-            label: `${__DARWIN__ ? 'Apple silicon' : 'Arm64'} banner`,
-            click: emit('show-arm64-banner'),
-          },
-          {
-            label: 'Thank you',
-            click: emit('show-thank-you-banner'),
-          },
-          {
-            label: 'Reorder Successful',
-            click: emit('show-test-reorder-banner'),
-          },
-          {
-            label: 'Reorder Undone',
-            click: emit('show-test-undone-banner'),
-          },
-          {
-            label: 'Cherry Pick Conflicts',
-            click: emit('show-test-cherry-pick-conflicts-banner'),
-          },
-          {
-            label: 'Merge Successful',
-            click: emit('show-test-merge-successful-banner'),
-          },
-        ],
-      }
-    )
-  }
+  helpItems.push(...buildTestMenu())
 
   if (__DARWIN__) {
     template.push({
@@ -699,7 +602,7 @@ function getStashedChangesLabel(isStashedChangesVisible: boolean): string {
 
 type ClickHandler = (
   menuItem: Electron.MenuItem,
-  browserWindow: Electron.BrowserWindow | undefined,
+  browserWindow: Electron.BaseWindow | undefined,
   event: Electron.KeyboardEvent
 ) => void
 
@@ -707,14 +610,17 @@ type ClickHandler = (
  * Utility function returning a Click event handler which, when invoked, emits
  * the provided menu event over IPC.
  */
-function emit(name: MenuEvent): ClickHandler {
+export function emit(name: MenuEvent): ClickHandler {
   return (_, focusedWindow) => {
     // focusedWindow can be null if the menu item was clicked without the window
     // being in focus. A simple way to reproduce this is to click on a menu item
     // while in DevTools. Since Desktop only supports one window at a time we
     // can be fairly certain that the first BrowserWindow we find is the one we
     // want.
-    const window = focusedWindow ?? BrowserWindow.getAllWindows()[0]
+    const window =
+      focusedWindow instanceof BrowserWindow
+        ? focusedWindow
+        : BrowserWindow.getAllWindows()[0]
     if (window !== undefined) {
       ipcWebContents.send(window.webContents, 'menu-event', name)
     }
@@ -743,7 +649,7 @@ function findClosestValue(arr: Array<number>, value: number) {
  */
 function zoom(direction: ZoomDirection): ClickHandler {
   return (menuItem, window) => {
-    if (!window) {
+    if (!(window instanceof BrowserWindow)) {
       return
     }
 

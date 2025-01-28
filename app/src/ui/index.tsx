@@ -73,6 +73,7 @@ import { NotificationsDebugStore } from '../lib/stores/notifications-debug-store
 import { trampolineServer } from '../lib/trampoline/trampoline-server'
 import { TrampolineCommandIdentifier } from '../lib/trampoline/trampoline-command'
 import { createAskpassTrampolineHandler } from '../lib/trampoline/trampoline-askpass-handler'
+import { createCredentialHelperTrampolineHandler } from '../lib/trampoline/trampoline-credential-helper'
 
 if (__DEV__) {
   installDevGlobals()
@@ -223,13 +224,19 @@ const statsStore = new StatsStore(
   new StatsDatabase('StatsDatabase'),
   new UiActivityMonitor()
 )
-const signInStore = new SignInStore()
 
 const accountsStore = new AccountsStore(localStorage, TokenStore)
+
+const signInStore = new SignInStore(accountsStore)
 
 trampolineServer.registerCommandHandler(
   TrampolineCommandIdentifier.AskPass,
   createAskpassTrampolineHandler(accountsStore)
+)
+
+trampolineServer.registerCommandHandler(
+  TrampolineCommandIdentifier.CredentialHelper,
+  createCredentialHelperTrampolineHandler(accountsStore)
 )
 
 const repositoriesStore = new RepositoriesStore(
@@ -342,7 +349,15 @@ ipcRenderer.on('blur', () => {
 })
 
 ipcRenderer.on('url-action', (_, action) =>
-  dispatcher.dispatchURLAction(action)
+  dispatcher
+    .dispatchURLAction(action)
+    .catch(e => log.error(`URL action ${action.name} failed`, e))
+)
+
+ipcRenderer.on('cli-action', (_, action) =>
+  dispatcher
+    .dispatchCLIAction(action)
+    .catch(e => log.error(`CLI action ${action.kind} failed`, e))
 )
 
 // react-virtualized will use the literal string "grid" as the 'aria-label'

@@ -28,11 +28,11 @@ import {
   DeletedImageDiff,
 } from './image-diffs'
 import { BinaryFile } from './binary-file'
-import { TextDiff } from './text-diff'
 import { SideBySideDiff } from './side-by-side-diff'
-import { enableExperimentalDiffViewer } from '../../lib/feature-flag'
 import { IFileContents } from './syntax-highlighting'
 import { SubmoduleDiff } from './submodule-diff'
+import { Octicon } from '../octicons'
+import * as OcticonSymbol from '../octicons/octicons.generated'
 
 // image used when no diff is displayed
 const NoDiffImage = encodePathAsUrl(__dirname, 'static/ufo-alert.svg')
@@ -226,6 +226,15 @@ export class Diff extends React.Component<IDiffProps, IDiffState> {
       }
 
       if (this.props.file.status.kind === AppFileStatusKind.Renamed) {
+        // Check if it was changed too
+        if (this.props.file.status.renameIncludesModifications) {
+          return (
+            <div className="panel renamed">
+              <Octicon symbol={OcticonSymbol.alert} />
+              The file was renamed and includes changes.
+            </div>
+          )
+        }
         return (
           <div className="panel renamed">
             The file was renamed but not changed
@@ -275,40 +284,20 @@ export class Diff extends React.Component<IDiffProps, IDiffState> {
   }
 
   private renderTextDiff(diff: ITextDiff) {
-    if (enableExperimentalDiffViewer() || this.props.showSideBySideDiff) {
-      return (
-        <SideBySideDiff
-          file={this.props.file}
-          diff={diff}
-          fileContents={this.props.fileContents}
-          hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
-          showSideBySideDiff={this.props.showSideBySideDiff}
-          onIncludeChanged={this.props.onIncludeChanged}
-          onDiscardChanges={this.props.onDiscardChanges}
-          askForConfirmationOnDiscardChanges={
-            this.props.askForConfirmationOnDiscardChanges
-          }
-          onHideWhitespaceInDiffChanged={
-            this.props.onHideWhitespaceInDiffChanged
-          }
-          showDiffCheckMarks={this.props.showDiffCheckMarks}
-        />
-      )
-    }
-
     return (
-      <TextDiff
+      <SideBySideDiff
         file={this.props.file}
-        readOnly={this.props.readOnly}
-        hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
-        onIncludeChanged={this.props.onIncludeChanged}
-        onDiscardChanges={this.props.onDiscardChanges}
         diff={diff}
         fileContents={this.props.fileContents}
+        hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
+        showSideBySideDiff={this.props.showSideBySideDiff}
+        onIncludeChanged={this.props.onIncludeChanged}
+        onDiscardChanges={this.props.onDiscardChanges}
         askForConfirmationOnDiscardChanges={
           this.props.askForConfirmationOnDiscardChanges
         }
         onHideWhitespaceInDiffChanged={this.props.onHideWhitespaceInDiffChanged}
+        showDiffCheckMarks={this.props.showDiffCheckMarks}
       />
     )
   }

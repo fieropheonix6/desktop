@@ -352,6 +352,7 @@ body.theme-dark {
   --syntax-attribute-color: #{$purple-300};
   --syntax-link-color: #{$blue-300};
   --syntax-header-color: #{$red-300};
+  --syntax-quote-color: #{$green-400};
 
   // Colors for form errors
   --error-color: #{$red};
@@ -374,6 +375,12 @@ body.theme-dark {
   --dialog-warning-color: #{$yellow-600};
   --dialog-information-color: #{$blue-400};
   --dialog-error-color: #{$red-600};
+
+  /** Banner */
+  --banner-warning-background: #272216;
+  --banner-warning-text-color: var(--text-color);
+  --banner-warning-link-color: #6682ff;
+  --banner-warning-icon-color: #{$yellow-700};
 
   /** File warning */
   --file-warning-background-color: #{rgba($yellow-900, 0.4)};

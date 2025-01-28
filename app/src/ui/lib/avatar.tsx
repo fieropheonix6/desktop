@@ -11,7 +11,7 @@ import {
 } from '../../lib/endpoint-capabilities'
 import { Account } from '../../models/account'
 import { parseStealthEmail } from '../../lib/email'
-import { noop } from 'lodash'
+import noop from 'lodash/noop'
 import { offsetFrom } from '../../lib/offset-from'
 import { ExpiringOperationCache } from './expiring-operation-cache'
 import { forceUnwrap } from '../../lib/fatal-error'
@@ -451,13 +451,16 @@ export class Avatar extends React.Component<IAvatarProps, IAvatarState> {
     }
 
     this.setState({
-      avatarToken: avatarTokenCache.get({ endpoint, accounts }).then(token => {
-        if (!this.cancelAvatarRequests) {
-          if (token && this.state.user?.endpoint === endpoint) {
-            this.resetAvatarCandidates(token)
+      avatarToken: avatarTokenCache
+        .get({ endpoint, accounts })
+        .then(token => {
+          if (!this.cancelAvatarRequests) {
+            if (token && this.state.user?.endpoint === endpoint) {
+              this.resetAvatarCandidates(token)
+            }
           }
-        }
-      }),
+        })
+        .catch(e => log.debug(`Failed to fetch avatar token: ${e}`)),
     })
   }
 

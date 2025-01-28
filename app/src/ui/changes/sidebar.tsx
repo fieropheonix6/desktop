@@ -30,6 +30,9 @@ import { getLargeFilePaths } from '../../lib/large-files'
 import { isConflictedFile, hasUnresolvedConflicts } from '../../lib/status'
 import { getAccountForRepository } from '../../lib/get-account-for-repository'
 import { IAheadBehind } from '../../models/branch'
+import { Emoji } from '../../lib/emoji'
+import { enableFilteredChangesList } from '../../lib/feature-flag'
+import { FilterChangesList } from './filter-changes-list'
 
 /**
  * The timeout for the animation of the enter/leave animation for Undo.
@@ -46,7 +49,7 @@ interface IChangesSidebarProps {
   readonly dispatcher: Dispatcher
   readonly commitAuthor: CommitIdentity | null
   readonly branch: string | null
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
   readonly mostRecentLocalCommit: Commit | null
   // Used in receiveProps, no-unused-prop-types doesn't know that
   // eslint-disable-next-line react/no-unused-prop-types
@@ -60,6 +63,7 @@ interface IChangesSidebarProps {
   readonly gitHubUserStore: GitHubUserStore
   readonly focusCommitMessage: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly accounts: ReadonlyArray<Account>
   readonly isShowingModal: boolean
   readonly isShowingFoldout: boolean
@@ -84,6 +88,8 @@ interface IChangesSidebarProps {
   readonly commitSpellcheckEnabled: boolean
 
   readonly showCommitLengthWarning: boolean
+
+  readonly canFilterChanges: boolean
 }
 
 export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
@@ -394,9 +400,14 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       this.props.repository
     )
 
+    const ChangesListComponent =
+      enableFilteredChangesList() && this.props.canFilterChanges
+        ? FilterChangesList
+        : ChangesList
+
     return (
       <div className="panel" role="tabpanel" aria-labelledby="changes-tab">
-        <ChangesList
+        <ChangesListComponent
           ref={this.changesListRef}
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
@@ -413,6 +424,9 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           onDiscardChanges={this.onDiscardChanges}
           askForConfirmationOnDiscardChanges={
             this.props.askForConfirmationOnDiscardChanges
+          }
+          askForConfirmationOnCommitFilteredChanges={
+            this.props.askForConfirmationOnCommitFilteredChanges
           }
           onDiscardChangesFromFiles={this.onDiscardChangesFromFiles}
           onOpenItem={this.onOpenItem}

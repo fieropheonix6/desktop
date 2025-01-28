@@ -100,7 +100,7 @@ const editors: ILinuxExternalEditor[] = [
     name: 'JetBrains PhpStorm',
     paths: [
       '/snap/bin/phpstorm',
-      '.local/share/JetBrains/Toolbox/scripts/phpstorm',
+      '.local/share/JetBrains/Toolbox/scripts/PhpStorm',
     ],
   },
   {
@@ -122,10 +122,25 @@ const editors: ILinuxExternalEditor[] = [
     ],
   },
   {
-    name: 'IntelliJ Goland',
+    name: 'JetBrains Goland',
     paths: [
       '/snap/bin/goland',
       '.local/share/JetBrains/Toolbox/scripts/goland',
+    ],
+  },
+  {
+    name: 'JetBrains CLion',
+    paths: ['/snap/bin/clion', '.local/share/JetBrains/Toolbox/scripts/clion1'],
+  },
+  {
+    name: 'JetBrains Rider',
+    paths: ['/snap/bin/rider', '.local/share/JetBrains/Toolbox/scripts/rider'],
+  },
+  {
+    name: 'JetBrains RubyMine',
+    paths: [
+      '/snap/bin/rubymine',
+      '.local/share/JetBrains/Toolbox/scripts/rubymine',
     ],
   },
   {
@@ -134,6 +149,13 @@ const editors: ILinuxExternalEditor[] = [
       '/snap/bin/pycharm',
       '/snap/bin/pycharm-professional',
       '.local/share/JetBrains/Toolbox/scripts/pycharm',
+    ],
+  },
+  {
+    name: 'JetBrains RustRover',
+    paths: [
+      '/snap/bin/rustrover',
+      '.local/share/JetBrains/Toolbox/scripts/rustrover',
     ],
   },
   {
@@ -178,6 +200,16 @@ const editors: ILinuxExternalEditor[] = [
   {
     name: 'Pluma',
     paths: ['/usr/bin/pluma'],
+  },
+  {
+    name: 'Zed',
+    paths: [
+      '/usr/bin/zedit',
+      '/usr/bin/zeditor',
+      '/usr/bin/zed-editor',
+      '~/.local/bin/zed',
+      '/usr/bin/zed',
+    ],
   },
 ]
 

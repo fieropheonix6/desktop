@@ -12,7 +12,6 @@ import {
   getGlobalConfigValue,
   setGlobalConfigValue,
 } from '../../lib/git/config'
-import { getGlobalConfigPath } from '../../lib/git'
 import { lookupPreferredEmail } from '../../lib/email'
 import { Shell, getAvailableShells } from '../../lib/shells'
 import { getAvailableEditors } from '../../lib/editors/lookup'
@@ -43,7 +42,11 @@ import { Prompts } from './prompts'
 import { Repository } from '../../models/repository'
 import { Notifications } from './notifications'
 import { Accessibility } from './accessibility'
-import { enableLinkUnderlines } from '../../lib/feature-flag'
+import {
+  ICustomIntegration,
+  TargetPathArgument,
+  isValidCustomIntegration,
+} from '../../lib/custom-integration'
 
 interface IPreferencesProps {
   readonly dispatcher: Dispatcher
@@ -55,6 +58,7 @@ interface IPreferencesProps {
   readonly showCommitLengthWarning: boolean
   readonly notificationsEnabled: boolean
   readonly optOutOfUsageTracking: boolean
+  readonly useExternalCredentialHelper: boolean
   readonly initialSelectedTab?: PreferencesTab
   readonly confirmRepositoryRemoval: boolean
   readonly confirmDiscardChanges: boolean
@@ -63,14 +67,21 @@ interface IPreferencesProps {
   readonly confirmCheckoutCommit: boolean
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
   readonly selectedExternalEditor: string | null
   readonly selectedShell: Shell
   readonly selectedTheme: ApplicationTheme
+  readonly selectedTabSize: number
+  readonly useCustomEditor: boolean
+  readonly customEditor: ICustomIntegration | null
+  readonly useCustomShell: boolean
+  readonly customShell: ICustomIntegration | null
   readonly repositoryIndicatorsEnabled: boolean
-  readonly onOpenFileInExternalEditor: (path: string) => void
+  readonly onEditGlobalGitConfig: () => void
   readonly underlineLinks: boolean
   readonly showDiffCheckMarks: boolean
+  readonly canFilterChanges: boolean
 }
 
 interface IPreferencesState {
@@ -86,6 +97,7 @@ interface IPreferencesState {
   readonly showCommitLengthWarning: boolean
   readonly notificationsEnabled: boolean
   readonly optOutOfUsageTracking: boolean
+  readonly useExternalCredentialHelper: boolean
   readonly confirmRepositoryRemoval: boolean
   readonly confirmDiscardChanges: boolean
   readonly confirmDiscardChangesPermanently: boolean
@@ -93,8 +105,13 @@ interface IPreferencesState {
   readonly confirmCheckoutCommit: boolean
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
   readonly availableEditors: ReadonlyArray<string>
+  readonly useCustomEditor: boolean
+  readonly customEditor: ICustomIntegration
+  readonly useCustomShell: boolean
+  readonly customShell: ICustomIntegration
   readonly selectedExternalEditor: string | null
   readonly availableShells: ReadonlyArray<Shell>
   readonly selectedShell: Shell
@@ -110,13 +127,25 @@ interface IPreferencesState {
   readonly repositoryIndicatorsEnabled: boolean
 
   readonly initiallySelectedTheme: ApplicationTheme
+  readonly initiallySelectedTabSize: number
 
   readonly isLoadingGitConfig: boolean
-  readonly globalGitConfigPath: string | null
 
   readonly underlineLinks: boolean
 
   readonly showDiffCheckMarks: boolean
+
+  readonly canFilterChanges: boolean
+}
+
+/**
+ * Default custom integration values to coalesce with. We can't make up a path
+ * nor a bundle ID, but we can at least provide a default argument.
+ */
+const DefaultCustomIntegration: ICustomIntegration = {
+  path: '',
+  bundleID: undefined,
+  arguments: TargetPathArgument,
 }
 
 /** The app-level preferences component. */
@@ -137,10 +166,15 @@ export class Preferences extends React.Component<
       initialDefaultBranch: null,
       disallowedCharactersMessage: null,
       availableEditors: [],
+      useCustomEditor: this.props.useCustomEditor,
+      customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useCustomShell: this.props.useCustomShell,
+      customShell: this.props.customShell ?? DefaultCustomIntegration,
       useWindowsOpenSSH: false,
       showCommitLengthWarning: false,
       notificationsEnabled: true,
       optOutOfUsageTracking: false,
+      useExternalCredentialHelper: false,
       confirmRepositoryRemoval: false,
       confirmDiscardChanges: false,
       confirmDiscardChangesPermanently: false,
@@ -148,16 +182,18 @@ export class Preferences extends React.Component<
       confirmCheckoutCommit: false,
       confirmForcePush: false,
       confirmUndoCommit: false,
+      askForConfirmationOnCommitFilteredChanges: false,
       uncommittedChangesStrategy: defaultUncommittedChangesStrategy,
       selectedExternalEditor: this.props.selectedExternalEditor,
       availableShells: [],
       selectedShell: this.props.selectedShell,
       repositoryIndicatorsEnabled: this.props.repositoryIndicatorsEnabled,
       initiallySelectedTheme: this.props.selectedTheme,
+      initiallySelectedTabSize: this.props.selectedTabSize,
       isLoadingGitConfig: true,
-      globalGitConfigPath: null,
       underlineLinks: this.props.underlineLinks,
       showDiffCheckMarks: this.props.showDiffCheckMarks,
+      canFilterChanges: this.props.canFilterChanges,
     }
   }
 
@@ -191,10 +227,8 @@ export class Preferences extends React.Component<
       getAvailableShells(),
     ])
 
-    const availableEditors = editors.map(e => e.editor)
-    const availableShells = shells.map(e => e.shell)
-
-    const globalGitConfigPath = await getGlobalConfigPath()
+    const availableEditors = editors.map(e => e.editor) ?? null
+    const availableShells = shells.map(e => e.shell) ?? null
 
     this.setState({
       committerName,
@@ -207,6 +241,7 @@ export class Preferences extends React.Component<
       showCommitLengthWarning: this.props.showCommitLengthWarning,
       notificationsEnabled: this.props.notificationsEnabled,
       optOutOfUsageTracking: this.props.optOutOfUsageTracking,
+      useExternalCredentialHelper: this.props.useExternalCredentialHelper,
       confirmRepositoryRemoval: this.props.confirmRepositoryRemoval,
       confirmDiscardChanges: this.props.confirmDiscardChanges,
       confirmDiscardChangesPermanently:
@@ -215,17 +250,25 @@ export class Preferences extends React.Component<
       confirmCheckoutCommit: this.props.confirmCheckoutCommit,
       confirmForcePush: this.props.confirmForcePush,
       confirmUndoCommit: this.props.confirmUndoCommit,
+      askForConfirmationOnCommitFilteredChanges:
+        this.props.askForConfirmationOnCommitFilteredChanges,
       uncommittedChangesStrategy: this.props.uncommittedChangesStrategy,
       availableShells,
       availableEditors,
+      useCustomEditor: this.props.useCustomEditor,
+      customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useCustomShell: this.props.useCustomShell,
+      customShell: this.props.customShell ?? DefaultCustomIntegration,
       isLoadingGitConfig: false,
-      globalGitConfigPath,
     })
   }
 
   private onCancel = () => {
     if (this.state.initiallySelectedTheme !== this.props.selectedTheme) {
       this.onSelectedThemeChanged(this.state.initiallySelectedTheme)
+    }
+    if (this.state.initiallySelectedTabSize !== this.props.selectedTabSize) {
+      this.onSelectedTabSizeChanged(this.state.initiallySelectedTabSize)
     }
 
     this.props.onDismissed()
@@ -274,12 +317,10 @@ export class Preferences extends React.Component<
               <Octicon className="icon" symbol={octicons.gear} />
               Advanced
             </span>
-            {enableLinkUnderlines() && (
-              <span id={this.getTabId(PreferencesTab.Accessibility)}>
-                <Octicon className="icon" symbol={octicons.accessibility} />
-                Accessibility
-              </span>
-            )}
+            <span id={this.getTabId(PreferencesTab.Accessibility)}>
+              <Octicon className="icon" symbol={octicons.accessibility} />
+              Accessibility
+            </span>
           </TabBar>
 
           {this.renderActiveTab()}
@@ -369,7 +410,15 @@ export class Preferences extends React.Component<
             onSelectedEditorChanged={this.onSelectedEditorChanged}
             availableShells={this.state.availableShells}
             selectedShell={this.state.selectedShell}
+            useCustomEditor={this.state.useCustomEditor}
+            customEditor={this.state.customEditor}
+            useCustomShell={this.state.useCustomShell}
+            customShell={this.state.customShell}
             onSelectedShellChanged={this.onSelectedShellChanged}
+            onUseCustomEditorChanged={this.onUseCustomEditorChanged}
+            onCustomEditorChanged={this.onCustomEditorChanged}
+            onUseCustomShellChanged={this.onUseCustomShellChanged}
+            onCustomShellChanged={this.onCustomShellChanged}
           />
         )
         break
@@ -400,9 +449,7 @@ export class Preferences extends React.Component<
               onEmailChanged={this.onCommitterEmailChanged}
               onDefaultBranchChanged={this.onDefaultBranchChanged}
               isLoadingGitConfig={this.state.isLoadingGitConfig}
-              selectedExternalEditor={this.props.selectedExternalEditor}
-              onOpenFileInExternalEditor={this.props.onOpenFileInExternalEditor}
-              globalGitConfigPath={this.state.globalGitConfigPath}
+              onEditGlobalGitConfig={this.props.onEditGlobalGitConfig}
             />
           </>
         )
@@ -413,6 +460,8 @@ export class Preferences extends React.Component<
           <Appearance
             selectedTheme={this.props.selectedTheme}
             onSelectedThemeChanged={this.onSelectedThemeChanged}
+            selectedTabSize={this.props.selectedTabSize}
+            onSelectedTabSizeChanged={this.onSelectedTabSizeChanged}
           />
         )
         break
@@ -436,6 +485,9 @@ export class Preferences extends React.Component<
             confirmCheckoutCommit={this.state.confirmCheckoutCommit}
             confirmForcePush={this.state.confirmForcePush}
             confirmUndoCommit={this.state.confirmUndoCommit}
+            askForConfirmationOnCommitFilteredChanges={
+              this.state.askForConfirmationOnCommitFilteredChanges
+            }
             onConfirmRepositoryRemovalChanged={
               this.onConfirmRepositoryRemovalChanged
             }
@@ -447,6 +499,9 @@ export class Preferences extends React.Component<
               this.onConfirmDiscardChangesPermanentlyChanged
             }
             onConfirmUndoCommitChanged={this.onConfirmUndoCommitChanged}
+            onAskForConfirmationOnCommitFilteredChanges={
+              this.onAskForConfirmationOnCommitFilteredChanges
+            }
             uncommittedChangesStrategy={this.state.uncommittedChangesStrategy}
             onUncommittedChangesStrategyChanged={
               this.onUncommittedChangesStrategyChanged
@@ -464,12 +519,18 @@ export class Preferences extends React.Component<
           <Advanced
             useWindowsOpenSSH={this.state.useWindowsOpenSSH}
             optOutOfUsageTracking={this.state.optOutOfUsageTracking}
+            useExternalCredentialHelper={this.state.useExternalCredentialHelper}
             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
+            canFilterChanges={this.state.canFilterChanges}
             onUseWindowsOpenSSHChanged={this.onUseWindowsOpenSSHChanged}
             onOptOutofReportingChanged={this.onOptOutofReportingChanged}
+            onUseExternalCredentialHelperChanged={
+              this.onUseExternalCredentialHelperChanged
+            }
             onRepositoryIndicatorsEnabledChanged={
               this.onRepositoryIndicatorsEnabledChanged
             }
+            onCanFilterChangesChanged={this.onCanFilterChangesChanged}
           />
         )
         break
@@ -505,6 +566,10 @@ export class Preferences extends React.Component<
     this.setState({ repositoryIndicatorsEnabled })
   }
 
+  private onCanFilterChangesChanged = (canFilterChanges: boolean) => {
+    this.setState({ canFilterChanges })
+  }
+
   private onLockFileDeleted = () => {
     this.setState({ existingLockFilePath: undefined })
   }
@@ -529,6 +594,10 @@ export class Preferences extends React.Component<
 
   private onOptOutofReportingChanged = (value: boolean) => {
     this.setState({ optOutOfUsageTracking: value })
+  }
+
+  private onUseExternalCredentialHelperChanged = (value: boolean) => {
+    this.setState({ useExternalCredentialHelper: value })
   }
 
   private onConfirmRepositoryRemovalChanged = (value: boolean) => {
@@ -557,6 +626,10 @@ export class Preferences extends React.Component<
 
   private onConfirmUndoCommitChanged = (value: boolean) => {
     this.setState({ confirmUndoCommit: value })
+  }
+
+  private onAskForConfirmationOnCommitFilteredChanges = (value: boolean) => {
+    this.setState({ askForConfirmationOnCommitFilteredChanges: value })
   }
 
   private onUncommittedChangesStrategyChanged = (
@@ -590,6 +663,22 @@ export class Preferences extends React.Component<
     this.setState({ selectedShell: shell })
   }
 
+  private onUseCustomEditorChanged = (useCustomEditor: boolean) => {
+    this.setState({ useCustomEditor })
+  }
+
+  private onCustomEditorChanged = (customEditor: ICustomIntegration) => {
+    this.setState({ customEditor })
+  }
+
+  private onUseCustomShellChanged = (useCustomShell: boolean) => {
+    this.setState({ useCustomShell })
+  }
+
+  private onCustomShellChanged = (customShell: ICustomIntegration) => {
+    this.setState({ customShell })
+  }
+
   private onSelectedThemeChanged = (theme: ApplicationTheme) => {
     this.props.dispatcher.setSelectedTheme(theme)
   }
@@ -600,6 +689,10 @@ export class Preferences extends React.Component<
 
   private onShowDiffCheckMarksChanged = (showDiffCheckMarks: boolean) => {
     this.setState({ showDiffCheckMarks })
+  }
+
+  private onSelectedTabSizeChanged = (tabSize: number) => {
+    this.props.dispatcher.setSelectedTabSize(tabSize)
   }
 
   private renderFooter() {
@@ -616,6 +709,8 @@ export class Preferences extends React.Component<
   }
 
   private onSave = async () => {
+    const { dispatcher } = this.props
+
     try {
       let shouldRefreshAuthor = false
 
@@ -630,7 +725,7 @@ export class Preferences extends React.Component<
       }
 
       if (this.props.repository !== null && shouldRefreshAuthor) {
-        this.props.dispatcher.refreshAuthor(this.props.repository)
+        dispatcher.refreshAuthor(this.props.repository)
       }
 
       // If the entered default branch is empty, we don't store it and keep
@@ -651,7 +746,7 @@ export class Preferences extends React.Component<
         this.props.repositoryIndicatorsEnabled !==
         this.state.repositoryIndicatorsEnabled
       ) {
-        this.props.dispatcher.setRepositoryIndicatorsEnabled(
+        dispatcher.setRepositoryIndicatorsEnabled(
           this.state.repositoryIndicatorsEnabled
         )
       }
@@ -669,64 +764,81 @@ export class Preferences extends React.Component<
       }
 
       this.props.onDismissed()
-      this.props.dispatcher.postError(e)
+      dispatcher.postError(e)
       return
     }
 
-    this.props.dispatcher.setUseWindowsOpenSSH(this.state.useWindowsOpenSSH)
-    this.props.dispatcher.setShowCommitLengthWarning(
-      this.state.showCommitLengthWarning
-    )
-    this.props.dispatcher.setNotificationsEnabled(
-      this.state.notificationsEnabled
-    )
+    dispatcher.setUseWindowsOpenSSH(this.state.useWindowsOpenSSH)
+    dispatcher.setShowCommitLengthWarning(this.state.showCommitLengthWarning)
+    dispatcher.setNotificationsEnabled(this.state.notificationsEnabled)
 
-    await this.props.dispatcher.setStatsOptOut(
-      this.state.optOutOfUsageTracking,
-      false
-    )
-    await this.props.dispatcher.setConfirmRepoRemovalSetting(
+    await dispatcher.setStatsOptOut(this.state.optOutOfUsageTracking, false)
+
+    const { useCustomEditor, customEditor, useCustomShell, customShell } =
+      this.state
+
+    const isValidCustomEditor =
+      customEditor && (await isValidCustomIntegration(customEditor))
+    dispatcher.setUseCustomEditor(useCustomEditor && isValidCustomEditor)
+    if (isValidCustomEditor) {
+      dispatcher.setCustomEditor(customEditor)
+    }
+
+    const isValidCustomShell =
+      customShell && (await isValidCustomIntegration(customShell))
+    dispatcher.setUseCustomShell(useCustomShell && isValidCustomShell)
+    if (isValidCustomShell) {
+      dispatcher.setCustomShell(customShell)
+    }
+
+    if (
+      this.props.useExternalCredentialHelper !==
+      this.state.useExternalCredentialHelper
+    ) {
+      dispatcher.setUseExternalCredentialHelper(
+        this.state.useExternalCredentialHelper
+      )
+    }
+
+    await dispatcher.setConfirmRepoRemovalSetting(
       this.state.confirmRepositoryRemoval
     )
 
-    await this.props.dispatcher.setConfirmForcePushSetting(
-      this.state.confirmForcePush
-    )
+    await dispatcher.setConfirmForcePushSetting(this.state.confirmForcePush)
 
-    await this.props.dispatcher.setConfirmDiscardStashSetting(
+    await dispatcher.setConfirmDiscardStashSetting(
       this.state.confirmDiscardStash
     )
 
-    await this.props.dispatcher.setConfirmCheckoutCommitSetting(
+    await dispatcher.setConfirmCheckoutCommitSetting(
       this.state.confirmCheckoutCommit
     )
 
-    await this.props.dispatcher.setConfirmUndoCommitSetting(
-      this.state.confirmUndoCommit
+    await dispatcher.setConfirmUndoCommitSetting(this.state.confirmUndoCommit)
+    await dispatcher.setConfirmCommitFilteredChanges(
+      this.state.askForConfirmationOnCommitFilteredChanges
     )
 
     if (this.state.selectedExternalEditor) {
-      await this.props.dispatcher.setExternalEditor(
-        this.state.selectedExternalEditor
-      )
+      await dispatcher.setExternalEditor(this.state.selectedExternalEditor)
     }
-    await this.props.dispatcher.setShell(this.state.selectedShell)
-    await this.props.dispatcher.setConfirmDiscardChangesSetting(
+    await dispatcher.setShell(this.state.selectedShell)
+    await dispatcher.setConfirmDiscardChangesSetting(
       this.state.confirmDiscardChanges
     )
-    await this.props.dispatcher.setConfirmDiscardChangesPermanentlySetting(
+    await dispatcher.setConfirmDiscardChangesPermanentlySetting(
       this.state.confirmDiscardChangesPermanently
     )
 
-    await this.props.dispatcher.setUncommittedChangesStrategySetting(
+    await dispatcher.setUncommittedChangesStrategySetting(
       this.state.uncommittedChangesStrategy
     )
 
-    this.props.dispatcher.setUnderlineLinksSetting(this.state.underlineLinks)
+    dispatcher.setUnderlineLinksSetting(this.state.underlineLinks)
 
-    this.props.dispatcher.setDiffCheckMarksSetting(
-      this.state.showDiffCheckMarks
-    )
+    dispatcher.setDiffCheckMarksSetting(this.state.showDiffCheckMarks)
+
+    dispatcher.setCanFilterChanges(this.state.canFilterChanges)
 
     this.props.onDismissed()
   }

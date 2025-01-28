@@ -7,6 +7,12 @@ import { findGitOnPath } from '../is-git-on-path'
 import { parseEnumValue } from '../enum'
 import { pathExists } from '../../ui/lib/path-exists'
 import { FoundShell } from './shared'
+import {
+  expandTargetPathArgument,
+  ICustomIntegration,
+  parseCustomIntegrationArguments,
+  spawnCustomIntegration,
+} from '../custom-integration'
 
 export enum Shell {
   Cmd = 'Command Prompt',
@@ -16,7 +22,7 @@ export enum Shell {
   GitBash = 'Git Bash',
   Cygwin = 'Cygwin',
   WSL = 'WSL',
-  WindowTerminal = 'Windows Terminal',
+  WindowsTerminal = 'Windows Terminal',
   FluentTerminal = 'Fluent Terminal',
   Alacritty = 'Alacritty',
 }
@@ -102,7 +108,7 @@ export async function getAvailableShells(): Promise<
   const windowsTerminal = await findWindowsTerminal()
   if (windowsTerminal != null) {
     shells.push({
-      shell: Shell.WindowTerminal,
+      shell: Shell.WindowsTerminal,
       path: windowsTerminal,
     })
   }
@@ -463,7 +469,7 @@ export function launch(
           cwd: path,
         }
       )
-    case Shell.WindowTerminal:
+    case Shell.WindowsTerminal:
       const windowsTerminalPath = `"${foundShell.path}"`
       log.info(`launching ${shell} at path: ${windowsTerminalPath}`)
       return spawn(windowsTerminalPath, ['-d .'], { shell: true, cwd: path })
@@ -474,4 +480,17 @@ export function launch(
     default:
       return assertNever(shell, `Unknown shell: ${shell}`)
   }
+}
+
+export function launchCustomShell(
+  customShell: ICustomIntegration,
+  path: string
+): ChildProcess {
+  log.info(`launching custom shell at path: ${customShell.path}`)
+  const argv = parseCustomIntegrationArguments(customShell.arguments)
+  const args = expandTargetPathArgument(argv, path)
+  return spawnCustomIntegration(`"${customShell.path}"`, args, {
+    shell: true,
+    cwd: path,
+  })
 }

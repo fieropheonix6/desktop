@@ -33,12 +33,13 @@ import { dragAndDropManager } from '../lib/drag-and-drop-manager'
 import { DragType } from '../models/drag-drop'
 import { PullRequestSuggestedNextAction } from '../models/pull-request'
 import { clamp } from '../lib/clamp'
+import { Emoji } from '../lib/emoji'
 
 interface IRepositoryViewProps {
   readonly repository: Repository
   readonly state: IRepositoryState
   readonly dispatcher: Dispatcher
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
   readonly sidebarWidth: IConstrainedValue
   readonly commitSummaryWidth: IConstrainedValue
   readonly stashedFilesWidth: IConstrainedValue
@@ -51,6 +52,7 @@ interface IRepositoryViewProps {
   readonly showSideBySideDiff: boolean
   readonly showDiffCheckMarks: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly askForConfirmationOnDiscardStash: boolean
   readonly askForConfirmationOnCheckoutCommit: boolean
   readonly focusCommitMessage: boolean
@@ -69,6 +71,14 @@ interface IRepositoryViewProps {
    * a foldout dialog such as the file menu, or the branches dropdown
    */
   readonly isShowingFoldout: boolean
+
+  /**
+   * Whether or not the user has a configured (explicitly,
+   * or automatically) external editor. Used to
+   * determine whether or not to render the action for
+   * opening the repository in an external editor.
+   */
+  readonly isExternalEditorAvailable: boolean
 
   /** The name of the currently selected external editor */
   readonly externalEditorLabel?: string
@@ -99,6 +109,8 @@ interface IRepositoryViewProps {
 
   /** The user's preference of pull request suggested next action to use **/
   readonly pullRequestSuggestedNextAction?: PullRequestSuggestedNextAction
+
+  readonly canFilterChanges: boolean
 }
 
 interface IRepositoryViewState {
@@ -241,6 +253,9 @@ export class RepositoryView extends React.Component<
         askForConfirmationOnDiscardChanges={
           this.props.askForConfirmationOnDiscardChanges
         }
+        askForConfirmationOnCommitFilteredChanges={
+          this.props.askForConfirmationOnCommitFilteredChanges
+        }
         accounts={this.props.accounts}
         isShowingModal={this.props.isShowingModal}
         isShowingFoldout={this.props.isShowingFoldout}
@@ -253,6 +268,7 @@ export class RepositoryView extends React.Component<
         }
         commitSpellcheckEnabled={this.props.commitSpellcheckEnabled}
         showCommitLengthWarning={this.props.showCommitLengthWarning}
+        canFilterChanges={this.props.canFilterChanges}
       />
     )
   }
@@ -342,6 +358,7 @@ export class RepositoryView extends React.Component<
           minimumWidth={this.props.sidebarWidth.min}
           onReset={this.handleSidebarWidthReset}
           onResize={this.handleSidebarResize}
+          description="Repository sidebar"
         >
           {this.renderTabs()}
           {this.renderSidebarContents()}
@@ -503,9 +520,7 @@ export class RepositoryView extends React.Component<
             appMenu={this.props.appMenu}
             repository={this.props.repository}
             repositoryState={this.props.state}
-            isExternalEditorAvailable={
-              this.props.externalEditorLabel !== undefined
-            }
+            isExternalEditorAvailable={this.props.isExternalEditorAvailable}
             dispatcher={this.props.dispatcher}
             pullRequestSuggestedNextAction={
               this.props.pullRequestSuggestedNextAction

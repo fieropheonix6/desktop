@@ -6,6 +6,7 @@ import {
   IAPIFullRepository,
   IAPICheckSuite,
   IAPIRepoRuleset,
+  getDotComAPIEndpoint,
 } from '../../lib/api'
 import { shell } from '../../lib/app-shell'
 import {
@@ -35,11 +36,6 @@ import {
   getRepositoryType,
 } from '../../lib/git'
 import { isGitOnPath } from '../../lib/is-git-on-path'
-import {
-  rejectOAuthRequest,
-  requestAuthenticatedUser,
-  resolveOAuthRequest,
-} from '../../lib/oauth'
 import {
   IOpenRepositoryFromURLAction,
   IUnknownAction,
@@ -124,6 +120,10 @@ import { ICombinedRefCheck, IRefCheck } from '../../lib/ci-checks/ci-checks'
 import { ValidNotificationPullRequestReviewState } from '../../lib/valid-notification-pull-request-review'
 import { UnreachableCommitsTab } from '../history/unreachable-commits-dialog'
 import { sendNonFatalException } from '../../lib/helpers/non-fatal-exception'
+import { SignInResult } from '../../lib/stores/sign-in-store'
+import { ICustomIntegration } from '../../lib/custom-integration'
+import { isAbsolute } from 'path'
+import { CLIAction } from '../../lib/cli-action'
 
 /**
  * An error handler function.
@@ -954,6 +954,41 @@ export class Dispatcher {
   }
 
   /**
+   * Set the width of the Branch toolbar button to the given value.
+   * This affects the toolbar button and its dropdown element.
+   *
+   * @param width The value for the width of Branch button
+   */
+  public setBranchDropdownWidth(width: number): Promise<void> {
+    return this.appStore._setBranchDropdownWidth(width)
+  }
+
+  /**
+   * Reset the width of the Branch toolbar button to its default value.
+   */
+  public resetBranchDropdownWidth(): Promise<void> {
+    return this.appStore._resetBranchDropdownWidth()
+  }
+
+  /**
+   * Set the width of the Push/Push toolbar button to the given value.
+   * This affects the toolbar button and its dropdown element.
+   *
+   * @param width The value for the width of Push/Pull button
+   */
+  public setPushPullButtonWidth(width: number): Promise<void> {
+    return this.appStore._setPushPullButtonWidth(width)
+  }
+
+  /**
+   * Reset the width of the Push/Pull toolbar button to its default
+   * value.
+   */
+  public resetPushPullButtonWidth(): Promise<void> {
+    return this.appStore._resetPushPullButtonWidth()
+  }
+
+  /**
    * Set the update banner's visibility
    */
   public setUpdateBannerVisibility(isVisible: boolean) {
@@ -1430,6 +1465,12 @@ export class Dispatcher {
     return this.appStore.setStatsOptOut(optOut, userViewedPrompt)
   }
 
+  public setUseExternalCredentialHelper(useExternalCredentialHelper: boolean) {
+    return this.appStore._setUseExternalCredentialHelper(
+      useExternalCredentialHelper
+    )
+  }
+
   /** Moves the app to the /Applications folder on macOS. */
   public moveToApplicationsFolder() {
     return moveToApplicationsFolder()
@@ -1439,16 +1480,8 @@ export class Dispatcher {
    * Clear any in-flight sign in state and return to the
    * initial (no sign-in) state.
    */
-  public resetSignInState(): Promise<void> {
+  public resetSignInState() {
     return this.appStore._resetSignInState()
-  }
-
-  /**
-   * Initiate a sign in flow for github.com. This will put the store
-   * in the Authentication step ready to receive user credentials.
-   */
-  public beginDotComSignIn(): Promise<void> {
-    return this.appStore._beginDotComSignIn()
   }
 
   /**
@@ -1456,8 +1489,10 @@ export class Dispatcher {
    * put the store in the EndpointEntry step ready to receive the url
    * to the enterprise instance.
    */
-  public beginEnterpriseSignIn(): Promise<void> {
-    return this.appStore._beginEnterpriseSignIn()
+  public beginEnterpriseSignIn(
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    this.appStore._beginEnterpriseSignIn(resultCallback)
   }
 
   /**
@@ -1477,23 +1512,27 @@ export class Dispatcher {
     return this.appStore._setSignInEndpoint(url)
   }
 
-  /**
-   * Attempt to advance from the authentication step using a username
-   * and password. This method must only be called when the store is
-   * in the authentication step or an error will be thrown. If the
-   * provided credentials are valid the store will either advance to
-   * the Success step or to the TwoFactorAuthentication step if the
-   * user has enabled two factor authentication.
-   *
-   * If an error occurs during sign in (such as invalid credentials)
-   * the authentication state will be updated with that error so that
-   * the responsible component can present it to the user.
-   */
-  public setSignInCredentials(
-    username: string,
-    password: string
-  ): Promise<void> {
-    return this.appStore._setSignInCredentials(username, password)
+  public beginDotComSignIn(resultCallback: (result: SignInResult) => void) {
+    this.appStore._beginDotComSignIn(resultCallback)
+  }
+
+  public beginBrowserBasedSignIn(
+    endpoint: string,
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    if (
+      endpoint === getDotComAPIEndpoint() ||
+      new URL(endpoint).hostname === 'github.com'
+    ) {
+      this.appStore._beginDotComSignIn(resultCallback)
+      this.requestBrowserAuthentication()
+    } else {
+      this.appStore._beginEnterpriseSignIn(resultCallback)
+      this.appStore
+        ._setSignInEndpoint(endpoint)
+        .then(() => this.requestBrowserAuthentication())
+        .catch(e => log.error(`Error setting sign in endpoint`, e))
+    }
   }
 
   /**
@@ -1507,8 +1546,8 @@ export class Dispatcher {
    * protocol handler to execute or by providing the wrong credentials
    * this promise will never complete.
    */
-  public requestBrowserAuthentication(): Promise<void> {
-    return this.appStore._requestBrowserAuthentication()
+  public requestBrowserAuthentication() {
+    this.appStore._requestBrowserAuthentication()
   }
 
   /**
@@ -1520,34 +1559,22 @@ export class Dispatcher {
    * protocol handler to execute or by providing the wrong credentials
    * this promise will never complete.
    */
-  public async requestBrowserAuthenticationToDotcom(): Promise<void> {
-    await this.beginDotComSignIn()
-    return this.requestBrowserAuthentication()
-  }
-
-  /**
-   * Attempt to complete the sign in flow with the given OTP token.\
-   * This method must only be called when the store is in the
-   * TwoFactorAuthentication step or an error will be thrown.
-   *
-   * If the provided token is valid the store will advance to
-   * the Success step.
-   *
-   * If an error occurs during sign in (such as invalid credentials)
-   * the authentication state will be updated with that error so that
-   * the responsible component can present it to the user.
-   */
-  public setSignInOTP(otp: string): Promise<void> {
-    return this.appStore._setSignInOTP(otp)
+  public requestBrowserAuthenticationToDotcom(
+    resultCallback?: (result: SignInResult) => void
+  ) {
+    this.appStore._beginDotComSignIn(resultCallback)
+    this.requestBrowserAuthentication()
   }
 
   /**
    * Launch a sign in dialog for authenticating a user with
    * GitHub.com.
    */
-  public async showDotComSignInDialog(): Promise<void> {
-    await this.appStore._beginDotComSignIn()
-    await this.appStore._showPopup({ type: PopupType.SignIn })
+  public async showDotComSignInDialog(
+    resultCallback?: (result: SignInResult) => void
+  ): Promise<void> {
+    this.appStore._beginDotComSignIn(resultCallback)
+    this.appStore._showPopup({ type: PopupType.SignIn })
   }
 
   /**
@@ -1555,14 +1582,17 @@ export class Dispatcher {
    * a GitHub Enterprise instance.
    * Optionally, you can provide an endpoint URL.
    */
-  public async showEnterpriseSignInDialog(endpoint?: string): Promise<void> {
-    await this.appStore._beginEnterpriseSignIn()
+  public async showEnterpriseSignInDialog(
+    endpoint?: string,
+    resultCallback?: (result: SignInResult) => void
+  ): Promise<void> {
+    this.appStore._beginEnterpriseSignIn(resultCallback)
 
     if (endpoint !== undefined) {
-      await this.appStore._setSignInEndpoint(endpoint)
+      this.appStore._setSignInEndpoint(endpoint)
     }
 
-    await this.appStore._showPopup({ type: PopupType.SignIn })
+    this.appStore._showPopup({ type: PopupType.SignIn })
   }
 
   /**
@@ -1583,19 +1613,6 @@ export class Dispatcher {
       type: PopupType.UnknownAuthors,
       authors,
       onCommit: onCommitAnyway,
-    })
-  }
-
-  public async showRepoRulesCommitBypassWarning(
-    repository: GitHubRepository,
-    branch: string,
-    onConfirm: () => void
-  ) {
-    return this.appStore._showPopup({
-      type: PopupType.ConfirmRepoRulesBypass,
-      repository,
-      branch,
-      onConfirm,
     })
   }
 
@@ -1753,6 +1770,11 @@ export class Dispatcher {
     }
 
     if (filepath !== null) {
+      if (isAbsolute(filepath)) {
+        log.error(`Refusing to open absolute path: ${filepath}`)
+        return
+      }
+
       const resolved = await resolveWithin(repository.path, filepath)
 
       if (resolved !== null) {
@@ -1840,20 +1862,43 @@ export class Dispatcher {
     return repository
   }
 
+  public async dispatchCLIAction(action: CLIAction) {
+    if (action.kind === 'clone-url') {
+      const { branch, url } = action
+
+      if (branch) {
+        await this.openBranchNameFromUrl(url, branch)
+      } else {
+        await this.openOrCloneRepository(url)
+      }
+    } else if (action.kind === 'open-repository') {
+      // user may accidentally provide a folder within the repository
+      // this ensures we use the repository root, if it is actually a repository
+      // otherwise we consider it an untracked repository
+      const path = await getRepositoryType(action.path)
+        .then(t =>
+          t.kind === 'regular' ? t.topLevelWorkingDirectory : action.path
+        )
+        .catch(e => {
+          log.error('Could not determine repository type', e)
+          return action.path
+        })
+
+      const { repositories } = this.appStore.getState()
+      const existingRepository = matchExistingRepository(repositories, path)
+
+      if (existingRepository) {
+        await this.selectRepository(existingRepository)
+      } else {
+        await this.showPopup({ type: PopupType.AddRepository, path })
+      }
+    }
+  }
+
   public async dispatchURLAction(action: URLActionType): Promise<void> {
     switch (action.name) {
       case 'oauth':
-        try {
-          log.info(`[Dispatcher] requesting authenticated user`)
-          const user = await requestAuthenticatedUser(action.code, action.state)
-          if (user) {
-            resolveOAuthRequest(user)
-          } else if (user === null) {
-            rejectOAuthRequest(new Error('Unable to fetch authenticated user.'))
-          }
-        } catch (e) {
-          rejectOAuthRequest(e)
-        }
+        await this.appStore._resolveOAuthRequest(action)
 
         if (__DARWIN__) {
           // workaround for user reports that the application doesn't receive focus
@@ -1870,30 +1915,6 @@ export class Dispatcher {
 
       case 'open-repository-from-url':
         this.openRepositoryFromUrl(action)
-        break
-
-      case 'open-repository-from-path':
-        // user may accidentally provide a folder within the repository
-        // this ensures we use the repository root, if it is actually a repository
-        // otherwise we consider it an untracked repository
-        const path = await getRepositoryType(action.path)
-          .then(t =>
-            t.kind === 'regular' ? t.topLevelWorkingDirectory : action.path
-          )
-          .catch(e => {
-            log.error('Could not determine repository type', e)
-            return action.path
-          })
-
-        const { repositories } = this.appStore.getState()
-        const existingRepository = matchExistingRepository(repositories, path)
-
-        if (existingRepository) {
-          await this.selectRepository(existingRepository)
-          this.statsStore.recordAddExistingRepository()
-        } else {
-          await this.showPopup({ type: PopupType.AddRepository, path })
-        }
         break
 
       default:
@@ -2416,6 +2437,10 @@ export class Dispatcher {
     return this.appStore._setConfirmUndoCommitSetting(value)
   }
 
+  public setConfirmCommitFilteredChanges(value: boolean) {
+    return this.appStore._setConfirmCommitFilteredChanges(value)
+  }
+
   /**
    * Converts a local repository to use the given fork
    * as its default remote and associated `GitHubRepository`.
@@ -2439,6 +2464,13 @@ export class Dispatcher {
    */
   public setSelectedTheme(theme: ApplicationTheme) {
     return this.appStore._setSelectedTheme(theme)
+  }
+
+  /**
+   * Set the application-wide tab size
+   */
+  public setSelectedTabSize(tabSize: number) {
+    return this.appStore._setSelectedTabSize(tabSize)
   }
 
   /**
@@ -3187,6 +3219,26 @@ export class Dispatcher {
     this.appStore._setLastThankYou(lastThankYou)
   }
 
+  /** Set whether or not the user wants to use a custom external editor */
+  public setUseCustomEditor(useCustomEditor: boolean) {
+    this.appStore._setUseCustomEditor(useCustomEditor)
+  }
+
+  /** Set the custom external editor info */
+  public setCustomEditor(customEditor: ICustomIntegration) {
+    this.appStore._setCustomEditor(customEditor)
+  }
+
+  /** Set whether or not the user wants to use a custom shell */
+  public setUseCustomShell(useCustomShell: boolean) {
+    this.appStore._setUseCustomShell(useCustomShell)
+  }
+
+  /** Set the custom shell info */
+  public setCustomShell(customShell: ICustomIntegration) {
+    this.appStore._setCustomShell(customShell)
+  }
+
   public async reorderCommits(
     repository: Repository,
     commitsToReorder: ReadonlyArray<Commit>,
@@ -3912,5 +3964,17 @@ export class Dispatcher {
 
   public setDiffCheckMarksSetting(diffCheckMarks: boolean) {
     return this.appStore._updateShowDiffCheckMarks(diffCheckMarks)
+  }
+
+  public setCanFilterChanges(canFilterChanges: boolean) {
+    return this.appStore._updateCanFilterChanges(canFilterChanges)
+  }
+
+  public testPruneBranches() {
+    return this.appStore._testPruneBranches()
+  }
+
+  public editGlobalGitConfig() {
+    return this.appStore._editGlobalGitConfig()
   }
 }

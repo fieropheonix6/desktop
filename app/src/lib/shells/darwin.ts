@@ -3,6 +3,12 @@ import { assertNever } from '../fatal-error'
 import appPath from 'app-path'
 import { parseEnumValue } from '../enum'
 import { FoundShell } from './shared'
+import {
+  expandTargetPathArgument,
+  ICustomIntegration,
+  parseCustomIntegrationArguments,
+  spawnCustomIntegration,
+} from '../custom-integration'
 
 export enum Shell {
   Terminal = 'Terminal',
@@ -14,6 +20,7 @@ export enum Shell {
   Tabby = 'Tabby',
   WezTerm = 'WezTerm',
   Warp = 'Warp',
+  Ghostty = 'Ghostty',
 }
 
 export const Default = Shell.Terminal
@@ -42,6 +49,8 @@ function getBundleIDs(shell: Shell): ReadonlyArray<string> {
       return ['com.github.wez.wezterm']
     case Shell.Warp:
       return ['dev.warp.Warp-Stable']
+    case Shell.Ghostty:
+      return ['com.mitchellh.ghostty']
     default:
       return assertNever(shell, `Unknown shell: ${shell}`)
   }
@@ -79,6 +88,7 @@ export async function getAvailableShells(): Promise<
     tabbyInfo,
     wezTermInfo,
     warpInfo,
+    ghosttyInfo,
   ] = await Promise.all([
     getShellInfo(Shell.Terminal),
     getShellInfo(Shell.Hyper),
@@ -89,6 +99,7 @@ export async function getAvailableShells(): Promise<
     getShellInfo(Shell.Tabby),
     getShellInfo(Shell.WezTerm),
     getShellInfo(Shell.Warp),
+    getShellInfo(Shell.Ghostty),
   ])
 
   const shells: Array<FoundShell<Shell>> = []
@@ -106,6 +117,10 @@ export async function getAvailableShells(): Promise<
 
   if (powerShellCoreInfo) {
     shells.push({ shell: Shell.PowerShellCore, ...powerShellCoreInfo })
+  }
+
+  if (ghosttyInfo) {
+    shells.push({ shell: Shell.Ghostty, ...ghosttyInfo })
   }
 
   if (kittyInfo) {
@@ -189,4 +204,16 @@ export function launch(
   } else {
     return spawn('open', ['-b', foundShell.bundleID, path])
   }
+}
+
+export function launchCustomShell(
+  customShell: ICustomIntegration,
+  path: string
+): ChildProcess {
+  const argv = parseCustomIntegrationArguments(customShell.arguments)
+  const args = expandTargetPathArgument(argv, path)
+
+  return customShell.bundleID
+    ? spawnCustomIntegration('open', ['-b', customShell.bundleID, ...args])
+    : spawnCustomIntegration(customShell.path, args)
 }
